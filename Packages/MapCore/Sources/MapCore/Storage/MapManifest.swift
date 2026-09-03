@@ -179,7 +179,10 @@ public struct MapManifest: Sendable, Equatable, Codable {
         self.bbox = bbox
         self.pointCount = pointCount
         self.keyframeCount = keyframeCount
-        self.createdAt = createdAt
+        // `created_at` is an ISO-8601 timestamp with one-second resolution (FORMAT.md §2), so the
+        // sub-second part of `createdAt` would be lost on the way to disk and a manifest would not
+        // decode equal to the one that was encoded. Truncate up front instead.
+        self.createdAt = Date(timeIntervalSince1970: createdAt.timeIntervalSince1970.rounded(.down))
         self.durationSeconds = durationSeconds
         self.deviceModel = deviceModel
         self.iosVersion = iosVersion
