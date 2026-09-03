@@ -74,7 +74,7 @@ final class SharedPointBuffer: @unchecked Sendable {
             }
             guard copied else { return 0 }
             var b = s.bounds
-            for i in 0..<n { b.formUnion(points[i].position) }
+            for i in 0..<n where points[i].y > -1000 { b.formUnion(points[i].position) }   // skip parked (unconfirmed/dead) entries
             s.bounds = b
             s.count += n
             s.generation &+= 1
@@ -105,7 +105,7 @@ final class SharedPointBuffer: @unchecked Sendable {
                 }
             }
             var b = BoundingBox.empty
-            for i in 0..<n { b.formUnion(points[i].position) }
+            for i in 0..<n where points[i].y > -1000 { b.formUnion(points[i].position) }
             s.bounds = b
             s.count = n
             s.active = inactive

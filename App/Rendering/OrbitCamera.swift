@@ -35,7 +35,7 @@ struct GhostCamera: Sendable {
 
     /// Updates the auto-framing targets from the cloud bounds.
     mutating func frame(bounds: BoundingBox) {
-        guard !bounds.isEmpty else { return }
+        guard !bounds.isEmpty, simd_length(bounds.extent) < 1000 else { return }   // ignore boxes polluted by parked points
         targetCenter = bounds.center
         targetRadius = max(simd_length(bounds.extent) * 0.5, 0.5)
     }
