@@ -1,0 +1,54 @@
+name: RoomMapper
+options:
+  bundleIdPrefix: tech.alandiza
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  xcodeVersion: "27.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    DEVELOPMENT_TEAM: RZ5NX26K3B
+    CODE_SIGN_STYLE: Automatic
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    CLANG_ENABLE_MODULES: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+  configs:
+    Debug:
+      MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+    Release:
+      MTL_ENABLE_DEBUG_INFO: NO
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+packages:
+  MapCore:
+    path: Packages/MapCore
+targets:
+  RoomMapper:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - "Resources/Info.plist"
+    dependencies:
+      - package: MapCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.alandiza.roommapper
+        PRODUCT_NAME: RoomMapper
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: App/Resources/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: App/Support/RoomMapper-Bridging-Header.h
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_PREVIEWS: NO
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        OTHER_SWIFT_FLAGS: "$(inherited)"
