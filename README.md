@@ -25,7 +25,22 @@ FORMAT.md                   On-disk format, precise enough for a Python reader
 TESTING.md                  Human-in-the-loop test log and measured budgets
 ```
 
-## Build and run on the device
+## One-command pipeline
+
+`scripts/rm.sh` wraps everything (it picks Xcode-beta when `xcode-select` points at the Command Line Tools, auto-detects the connected iPhone, and builds into `/tmp` so iCloud attributes never break code signing):
+
+```bash
+scripts/rm.sh setup       # XcodeGen + Metal toolchain (once)
+scripts/rm.sh test        # MapCore unit tests on the Mac
+scripts/rm.sh run         # build (signed) + install + launch with the console attached
+scripts/rm.sh all         # test + run
+scripts/rm.sh pull-maps   # copy every map from the phone into ./maps-export
+scripts/rm.sh devices     # show which device ids will be used
+```
+
+Other subcommands: `gen`, `build [release]`, `install`, `launch`, `clean`. Override the device with `RM_DEVICE=<coredevice-id> RM_UDID=<hardware-udid>`.
+
+## Build and run on the device (manual)
 
 Requirements: macOS with Xcode 27 (beta at the time of writing), the Metal toolchain component, XcodeGen, and an iPhone with LiDAR (tested on iPhone 16 Pro Max, iOS 27.0). ARKit does not run in the Simulator; nothing here targets it.
 

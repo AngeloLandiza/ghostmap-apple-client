@@ -13,3 +13,4 @@ RoomMapper.xcodeproj/
 .DS_Store
 # Claude worktrees
 .claude/worktrees/
+maps-export/
