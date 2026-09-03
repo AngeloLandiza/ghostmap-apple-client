@@ -221,7 +221,7 @@ public enum KeyframeLogReader {
 public enum MapFile: String, CaseIterable, Sendable { case manifest = "manifest.json", keyframeLog = "keyframes.bin", cloud = "cloud.ply", thumbnail = "thumbnail.png", worldMap = "worldmap.arworldmap", sessionLog = "session.log" }
 public struct MapSummary: Sendable, Equatable { public var manifest: MapManifest; public var directoryURL: URL; public var sizeBytes: Int64; public var hasThumbnail: Bool; public var hasCloud: Bool }
 public final class MapStore: Sendable {
-  public let rootURL: URL                                   // …/Application Support/Maps
+  public let rootURL: URL                                   // …/Documents/Maps
   public init(rootURL: URL) throws                          // creates directory
   public func directoryURL(for id: MapID) -> URL
   public func url(for file: MapFile, in id: MapID) -> URL
@@ -254,7 +254,7 @@ public enum CloudRebuilder {
 - **SharedPointBuffer**: two `MTLBuffer`s of 3 M × 16 B (`storageModeShared`), active index + count behind an `os_unfair_lock`; `append` copies into the active buffer past `count` then publishes; `replaceAll` writes the inactive buffer and swaps. `snapshot()` returns (buffer, count) for a frame.
 - **Renderers**: `MetalRenderer` draws camera quad (YCbCr→RGB), live depth points (49 152 vertices, depth/conf textures via `CVMetalTextureCache`), global cloud (stride so ≤ 1 M drawn, 35 % opacity by default, toggle). `GhostMapRenderer` on an `MTKView` with `preferredFramesPerSecond = 30`, `isPaused`-free frame skipping when the main renderer's last frame exceeded 16.7 ms or has 3 command buffers in flight; draws cloud with stride ≤ 250 k at 55 % alpha, trajectory polyline, camera frustum; top-down ortho auto-framed to bounds with north = initial heading; optional slow orbit at 35 ° tilt; expanded mode with orbit/pan/zoom; `renderThumbnail(size: 512) -> CGImage` offscreen.
 - **Thermal**: `.nominal/.fair → .normal`, `.serious → .halved`, `.critical → .paused` + Ghost Map warning; every transition logged to os_log and session.log.
-- **Storage flow**: `MapStore` under `Application Support/Maps`; Info.plist enables file sharing + open-in-place. Launch: `markInterruptedRecordings()`; failed maps with a log offer **Rebuild** (CloudRebuilder → PLY + thumbnail → saved).
+- **Storage flow**: `MapStore` under `Documents/Maps`; Info.plist enables file sharing + open-in-place. Launch: `markInterruptedRecordings()`; failed maps with a log offer **Rebuild** (CloudRebuilder → PLY + thumbnail → saved).
 - **UI**: `MapListView` (thumbnail, editable name, points, keyframes, duration, size, status), `CaptureView` (Metal view + Start/Stop + Ghost Map overlay + settings: high-only confidence, orbit toggle, draw-global toggle), `GhostMapView` (36 % width square, 16 pt inset, ultraThinMaterial, 12 pt radius, status strip ≥ 4 Hz, tap expand / swipe-down shrink / long-press mode toggle; `allowsHitTesting` scoped so Start/Stop is never covered), `MapDetailView` (PLY → Metal buffer, orbit/pan/zoom, ShareLink export, Delete with confirmation).
 
 ## 5. Budgets (measured and logged)

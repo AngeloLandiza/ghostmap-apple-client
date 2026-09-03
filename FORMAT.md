@@ -11,7 +11,7 @@ binary32 (`f32`) or binary64 (`f64`).
 ## 1. Directory layout
 
 Every map is one directory under the app's map root
-(`<Application Support>/Maps/` on the phone, visible through Files because the app enables file
+(`Documents/Maps/` inside the app container on the phone, visible through Files because the app enables file
 sharing). The directory name is the map id: an uppercase UUID string such as
 `6BA7B810-9DAD-11D1-80B4-00C04FD430C8`.
 

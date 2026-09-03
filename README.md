@@ -1,98 +1,67 @@
-# RoomMapper
+# Ghostmap
 
-A local-first iOS room mapper for iPhone 16 Pro Max. It uses ARKit world tracking (visual-inertial odometry) plus the LiDAR scene-depth API to build a colored point cloud of a room, stores every map on the phone, and shows the map's live status in a translucent **Ghost Map** panel in the top-right corner of the capture screen. No backend, no network, no third-party dependencies.
+*Codename RoomMapper.* A local-first iPhone app that maps a room with LiDAR and keeps the map honest while the room changes.
 
-This is the standalone, single-phone example of the iOS component described in the swarm-mapping MVP plan (§6 "iOS Client Design"). Marker-based origins, collaborative sessions, mesh reconstruction and uploads are deliberately out of scope; the extension points for them are listed at the end.
+Point the phone around a room and Ghostmap builds a colored 3D point cloud on the device, in real time, with no server, no account and no network. The **Ghost Map** in the corner shows the whole map as it grows, and the map itself forgets what is no longer there: people walking through, a chair that was moved, a door that opened.
+
+Built for iPhone 16 Pro Max (any iPhone or iPad with a LiDAR scanner works), iOS 18 or later.
 
 ## What it does
 
-- **Capture:** `ARWorldTrackingConfiguration` with `sceneDepth`, gravity alignment, no plane detection or scene reconstruction. Every frame is drawn live (camera feed + the frame's depth as colored points). A keyframe is emitted when the camera moved > 0.15 m, rotated > 12°, or 0.75 s elapsed, and tracking is normal.
-- **Global cloud (dynamic):** each keyframe is unprojected on the CPU with the depth-scaled intrinsics and colored from the camera image, then fused into a 2 cm voxel map (1 cm in high-resolution mode) that keeps a running mean per cell and a log-odds occupancy score. Every keyframe also carves free space: voxels the new depth image sees through lose score and are removed, so people walking through or furniture that moves does not leave ghosts. The cloud is capped at 3 M points; at the cap it is coarsened once and carving keeps freeing capacity.
-- **Settings:** a Quality preset (Performance / Balanced / Quality), a Dynamic-objects sensitivity (Conservative / Normal / Aggressive) and a 4K color toggle live in the capture screen's settings menu. New geometry is shown only after it has been seen twice; anything the depth image sees through is carved away at 4 Hz.
-- **Ghost Map:** a second Metal view sharing the same GPU point buffer, drawing ≤ 250 k strided points at 55 % opacity, the keyframe trajectory and the camera frustum, top-down (north = initial heading) or orbiting. Tap to expand with orbit/pan/zoom, tap again or swipe down to shrink, long-press to switch top-down/orbit. A status strip updates at 5 Hz.
-- **Persistence:** every map is a directory under `Documents/Maps/<mapID>/` (visible in the Files app) with `manifest.json`, an append-only `keyframes.bin` (LZFSE depth + confidence, CRC per record), `cloud.ply`, `thumbnail.png`, a best-effort `worldmap.arworldmap` and `session.log`. See [FORMAT.md](FORMAT.md).
-- **Map list and detail:** thumbnails, editable names, stats, status; a detail viewer with orbit/pan/zoom; PLY export through the share sheet; delete; and a Rebuild action that recovers the cloud from the keyframe log after a crash.
+- **Live capture** with ARKit world tracking and scene depth: camera feed plus the current frame's depth as colored points, at 60 fps.
+- **Dynamic global map**: a voxel map that fuses repeated observations, shows geometry only after it has been seen twice, and carves away anything the depth camera can see through. Ghosts of moved objects disappear within seconds.
+- **Ghost Map panel**: a translucent miniature of the entire map in the top-right corner, top-down or orbiting, with the walked trajectory and the camera frustum. Tap to expand, long-press to change view, swipe down to shrink. A status strip shows tracking, keyframes, points, time, size, thermal state and frame rate.
+- **Quality and performance presets**, a dynamic-object sensitivity setting, optional 4K color and a high-confidence-depth mode.
+- **Everything stays on the phone**: each map is a folder with a manifest, an append-only keyframe log (LiDAR depth and confidence, compressed), a PLY point cloud, a thumbnail, a best-effort ARKit world map and a session log. Maps are visible in the Files app.
+- **Map library**: thumbnails, editable names, stats, a 3D viewer with orbit / pan / zoom, PLY export through the share sheet, delete, and recovery of interrupted recordings from the keyframe log.
 
-## Repository layout
+## Quick start
 
-```
-project.yml                 XcodeGen spec (generates RoomMapper.xcodeproj)
-Packages/MapCore/           Pure-Swift package (Foundation, simd, Compression only); builds and tests on macOS
-App/                        iOS app target: Capture, Rendering, UI, Support, Resources
-PLAN.md                     Architecture, data flow, MapCore API contract
-DECISIONS.md                Every non-obvious choice and why
-FORMAT.md                   On-disk format, precise enough for a Python reader
-TESTING.md                  Human-in-the-loop test log and measured budgets
-```
-
-## One-command pipeline
-
-`scripts/rm.sh` wraps everything (it picks Xcode-beta when `xcode-select` points at the Command Line Tools, auto-detects the connected iPhone, and builds into `/tmp` so iCloud attributes never break code signing):
+Requirements: macOS with Xcode 26 or 27 (the Metal toolchain component is downloaded on first setup), Homebrew, and an iPhone with LiDAR connected over USB with Developer Mode enabled.
 
 ```bash
-scripts/rm.sh setup       # XcodeGen + Metal toolchain (once)
-scripts/rm.sh test        # MapCore unit tests on the Mac
-scripts/rm.sh run         # build (signed) + install + launch with the console attached
-scripts/rm.sh all         # test + run
-scripts/rm.sh pull-maps   # copy every map from the phone into ./maps-export
-scripts/rm.sh devices     # show which device ids will be used
+git clone https://github.com/AngeloLandiza/apple-VSLAM-client.git && cd apple-VSLAM-client
+scripts/rm.sh setup     # XcodeGen + Metal toolchain (once)
+scripts/rm.sh all       # unit tests, signed build, install, launch with the console attached
 ```
 
-Other subcommands: `gen`, `build [release]`, `install`, `launch`, `clean`. Override the device with `RM_DEVICE=<coredevice-id> RM_UDID=<hardware-udid>`.
+On the first launch trust the developer profile on the phone (Settings → General → VPN & Device Management) and allow camera access. Then tap **Scan**, press the red button, walk slowly around the room, press the square to stop, and open the saved map from the list.
 
-## Build and run on the device (manual)
+More commands: `scripts/rm.sh test | build | run | pull-maps | devices | clean`. To use Xcode instead, run `scripts/rm.sh gen` and open `RoomMapper.xcodeproj`. Signing is automatic; set your team in `project.yml` if it differs.
 
-Requirements: macOS with Xcode 27 (beta at the time of writing), the Metal toolchain component, XcodeGen, and an iPhone with LiDAR (tested on iPhone 16 Pro Max, iOS 27.0). ARKit does not run in the Simulator; nothing here targets it.
+## How it works, in one paragraph
 
-```bash
-export DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer   # only if xcode-select points elsewhere
-brew install xcodegen
-xcodebuild -downloadComponent MetalToolchain                             # once, Xcode 26+
-xcodegen generate
+Every ARKit frame is drawn immediately from GPU textures (no copies). A keyframe policy picks frames after 15 cm of motion, 12° of rotation or 0.75 s; each keyframe's 256×192 depth map is unprojected on a background actor, colored from the camera image and fused into a 2 cm voxel map. Between keyframes, depth-only frames at 4 Hz carve free space so stale voxels are removed even when the phone is still. The map lives in one GPU buffer that the main view, the Ghost Map and the PLY exporter all read. Every keyframe is appended to an on-disk log as it happens, so a crash never loses more than the last frame.
+
+Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DYNAMIC-MAP.md](docs/DYNAMIC-MAP.md).
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/USAGE.md](docs/USAGE.md) | Using the app: capture screen, Ghost Map gestures, settings, map library, export, recovery, logs |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modules, data flow, concurrency model, rendering, storage flow, extension points |
+| [docs/DYNAMIC-MAP.md](docs/DYNAMIC-MAP.md) | The confirmation-gated voxel map: fusion, carving, parameters, presets |
+| [FORMAT.md](FORMAT.md) | On-disk format of a map, precise enough for a Python reader |
+| [DECISIONS.md](DECISIONS.md) | Every non-obvious engineering decision and why |
+| [TESTING.md](TESTING.md) | Budgets, unit-test status and the device test log |
+| [PLAN.md](PLAN.md) | The original build plan and MapCore API contract |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
+
+## Project layout
+
+```
+scripts/rm.sh            build / test / run pipeline
+project.yml              XcodeGen spec (RoomMapper.xcodeproj is generated, not committed)
+Packages/MapCore/        pure Swift package: geometry, keyframe policy, voxel maps, codecs, storage; 324 unit tests
+App/                     iOS app: Capture (ARKit, keyframe processing), Rendering (Metal), UI (SwiftUI), Support
+docs/                    documentation
 ```
 
-Run the MapCore unit tests on the Mac:
+## Status
 
-```bash
-cd Packages/MapCore && swift test --scratch-path /tmp/mapcore-build   # scratch dir outside iCloud-synced folders
-```
+Version 0.1.0. Compiles in Swift 6 language mode; MapCore's unit tests pass on macOS. Device testing so far has been informal (capture, Ghost Map, dynamic removal); measured budget numbers are still to be recorded in TESTING.md.
 
-Build, install and launch on the phone (find the identifiers with `xcrun devicectl list devices`; use the hardware UDID for `xcodebuild` and the CoreDevice identifier for `devicectl`):
+Known limitations: if the app is interrupted mid-recording (call, app switch) ARKit may re-anchor and later points can land in a shifted frame; rebuilt clouds are gray because the keyframe log carries no color; LiDAR depth is 256×192, so fine detail comes from multi-view fusion rather than the sensor; no relocalization into a stored map yet.
 
-```bash
-xcodebuild -project RoomMapper.xcodeproj -scheme RoomMapper \
-  -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates \
-  -derivedDataPath /tmp/roommapper-dd build
-xcrun devicectl device install app --device <COREDEVICE-ID> /tmp/roommapper-dd/Build/Products/Debug-iphoneos/RoomMapper.app
-xcrun devicectl device process launch --device <COREDEVICE-ID> --console tech.alandiza.roommapper
-```
-
-Build outputs must live outside iCloud-synced folders (hence `/tmp`): files created inside `~/Documents` pick up Finder/iCloud extended attributes and `codesign` refuses them with "resource fork, Finder information, or similar detritus not allowed".
-
-Before the first run: unlock the phone and keep it unlocked, enable Developer Mode (Settings → Privacy & Security → Developer Mode), and after the first install trust the developer profile (Settings → General → VPN & Device Management). Signing is automatic with the team ID in `project.yml`.
-
-## Human-in-the-loop test protocol
-
-Compiling and `swift test` never need permission. Anything that installs or launches on the phone is preceded by a short Test Brief (what is being tested, what the tester should do and for how long, what success looks like) and an explicit "Ready to test?" gate. After each test the tester's observations and the pulled logs are recorded in [TESTING.md](TESTING.md). Small tests early (T0 smoke) beat one big test at the end.
-
-## Budgets and how they are measured
-
-| Budget | Target | Source |
-|---|---|---|
-| Main view | 60 fps; ≥ 30 fps while a keyframe is processed | `fps` in the Ghost Map strip (EMA of draw intervals) |
-| AR delegate callback | ≤ 2 ms p95 on the main thread | `cb` in the strip; p95 and max in the finalize log line |
-| Memory | ≤ 500 MB at 3 M points | `mem` in the expanded strip (`phys_footprint`) |
-| Disk | ≤ 60 MB per 3-minute scan | `size_bytes` in `manifest.json` |
-| Finalize | ≤ 5 s with progress | `finalize_s` in `manifest.json` |
-
-Measured values are recorded in TESTING.md after each device test.
-
-## Logs
-
-`os.Logger` subsystem `tech.alandiza.roommapper` with categories `capture`, `cloud`, `storage`, `render`, `thermal`, `app`. Each map also has a `session.log` with thermal transitions, tracking changes, timings and the budget numbers of that session. Launching with `devicectl … --console` streams the os_log output to the Mac.
-
-## Extension points
-
-- **Marker origin (MVP plan §6):** `MapManifest.origin` / `frame` and the pose written per keyframe in `KeyframeProcessor` (today `camera.transform`). A marker implementation detects an `ARImageAnchor`, stores `origin = {type: "marker", marker_id: …}` and writes `T_marker⁻¹ · camera.transform`.
-- **Upload path (MVP plan §5.2, §7):** `MapStore` exposes every file URL; `keyframes.bin` records already contain the plan's live-keyframe fields (seq, timestamp, pose, intrinsics, tracking state, LZFSE depth and confidence) and `manifest.json` mirrors the map artifact manifest.
-- **Meshes:** `ARSessionController.start()` sets `sceneReconstruction = []`; enabling it and handling `ARMeshAnchor` is the flagged v2 step.
+Marker-based origins, uploads and collaborative sessions from the swarm-mapping plan are deliberately out of scope; their extension points are documented in docs/ARCHITECTURE.md.

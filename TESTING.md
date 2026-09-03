@@ -22,8 +22,9 @@ Human-in-the-loop device tests. Every entry records date, build, test id, what w
 
 | Date | Build | Test | Outcome | Numbers | Follow-ups |
 |---|---|---|---|---|---|
-| _pending_ | | T0 Smoke | | | |
-| _pending_ | | T1 Capture | | | |
+| 2026-09-03 | dev c9fe7c7 | T0/T1 informal | App launched, captured and saved a room (reported by the owner) | not recorded | ghost points of removed objects remained → replaced the static grid with `DynamicVoxelMap` (5bf537f) |
+| 2026-09-03 | dev 5bf537f | T1 informal | Dynamic map v1 still left ghosts | not recorded | carving required high confidence and ran only on keyframes → confirmation-gated map + 4 Hz carve frames (e1e5cd4) |
+| 2026-09-03 | dev e1e5cd4 | T0 informal | Ghost Map framed wrongly (tiny cloud) | not recorded | parked points polluted the bounds → fixed (6c540b3) |
 | _pending_ | | T2 Persistence | | | |
 | _pending_ | | T3 Endurance | | | |
 
