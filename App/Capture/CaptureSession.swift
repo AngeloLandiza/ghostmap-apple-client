@@ -188,8 +188,12 @@ final class CaptureSession {
             pointBuffer.removeAll()
             trajectory.removeAll()
             processor = KeyframeProcessor(pointBuffer: pointBuffer, trajectory: trajectory, storage: storage,
-                                          logger: log, mapConfig: settings.mapConfig, minConfidence: settings.minConfidence)
+                                          logger: log, mapConfig: settings.mapConfig, minConfidence: settings.minConfidence,
+                                          unprojectionStride: settings.unprojectionStride)
             controller.policy.config = settings.policyConfig
+            controller.carveInterval = settings.carveInterval
+            mainRenderer.maxCloudPoints = settings.mainViewMaxPoints
+            ghostRenderer.maxPoints = ghostExpanded ? settings.ghostMaxPoints * 4 : settings.ghostMaxPoints
             cloudStats = CloudStats()
             droppedKeyframes = 0
             inFlightKeyframes = 0
@@ -206,7 +210,7 @@ final class CaptureSession {
             controller.setIntake(true)
             phase = .recording
             let c = controller.policy.config
-            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(settings.mapConfig.cellSize)m cap=\(settings.mapConfig.maxPoints) highRes=\(settings.highResolution)")
+            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(settings.mapConfig.cellSize)m cap=\(settings.mapConfig.maxPoints) quality=\(settings.quality.rawValue) dynamics=\(settings.dynamicSensitivity.rawValue) stride=\(settings.unprojectionStride) carveInterval=\(settings.carveInterval)")
         } catch {
             phase = .failed("Could not start recording: \(error)")
             logger.log(.app, "recording start failed: \(error)", level: .error)
@@ -216,7 +220,7 @@ final class CaptureSession {
     private func handleKeyframe(_ snapshot: KeyframeSnapshot) {
         guard phase == .recording, let processor else { return }
         guard inFlightKeyframes < 2 else {
-            droppedKeyframes += 1
+            if !snapshot.isCarveOnly { droppedKeyframes += 1 }
             return
         }
         inFlightKeyframes += 1
@@ -346,7 +350,7 @@ final class CaptureSession {
 
     func setGhostExpanded(_ expanded: Bool) {
         ghostExpanded = expanded
-        ghostRenderer.maxPoints = expanded ? 1_000_000 : 250_000
+        ghostRenderer.maxPoints = expanded ? settings.ghostMaxPoints * 4 : settings.ghostMaxPoints
         ghostRenderer.pointSizePx = expanded ? 4 : 3
         ghostRenderer.pointAlpha = expanded ? 0.8 : 0.55
         ghostRenderer.skipWhenMainIsBehind = !expanded
@@ -369,6 +373,9 @@ final class CaptureSession {
             controller.start(highResolutionColor: settings.highResolutionColor)
         }
         mainRenderer.settings = settings
+        mainRenderer.maxCloudPoints = settings.mainViewMaxPoints
+        ghostRenderer.maxPoints = ghostExpanded ? settings.ghostMaxPoints * 4 : settings.ghostMaxPoints
+        controller.carveInterval = settings.carveInterval
         ghostRenderer.camera.autoOrbit = settings.ghostAutoOrbit
         // The toggle only rotates in orbit mode, so it selects the mode too (long-press still overrides).
         if settings.ghostAutoOrbit {

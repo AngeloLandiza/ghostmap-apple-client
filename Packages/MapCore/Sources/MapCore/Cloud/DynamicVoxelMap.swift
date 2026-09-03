@@ -4,9 +4,9 @@ import simd
 struct VoxelMeta: Sendable, Equatable {
     /// Log-odds-style occupancy score; `Int8.min` marks a dead voxel awaiting compaction.
     var occupancy: Int8
-    /// Number of fused samples (saturating); drives the running mean.
+    /// Number of distinct observations (saturating); drives the running mean and confirmation.
     var weight: UInt8
-    /// Keyframe index of the last supporting observation.
+    /// Integration index of the last supporting observation.
     var lastSeen: UInt16
 
     static let dead = VoxelMeta(occupancy: Int8.min, weight: 0, lastSeen: 0)
@@ -45,7 +45,6 @@ struct VoxelIndexMap: Sendable {
         }
     }
 
-    /// Inserts or overwrites.
     mutating func set(_ key: Int64, _ value: Int32) {
         if (count + 1) * 10 > keys.count * 7 { grow() }
         var i = VoxelIndexMap.slot(key, mask: mask)
@@ -90,16 +89,19 @@ struct VoxelIndexMap: Sendable {
     var slotBytes: Int { keys.count * 12 }
 }
 
-/// A voxel map for dynamic environments.
+/// A confirmation-gated voxel map for dynamic environments.
 ///
-/// Each cell keeps a running (weight-capped) mean position and color, so re-observed geometry denoises
-/// and slowly adapts, plus a log-odds occupancy score. Every keyframe also *carves* free space: existing
-/// voxels that fall inside the keyframe's frustum are projected into its depth image, and a voxel whose
-/// ray demonstrably passes through it (measured depth well beyond the voxel) receives a miss; voxels that
-/// are re-observed receive support. Voxels whose score falls below the death threshold are hidden at once
-/// and physically removed at the next compaction, which also rebuilds the hash and chunk bounds. This is
-/// the visibility-based, OctoMap/Removert-style approach applied incrementally at keyframe rate. Chunk
-/// (4096-point) bounding boxes cull the carving pass so it only touches points inside the view.
+/// * **Confirmation.** A voxel is only *shown* (and only counted) once it has been observed in
+///   `confirmHits` separate integrations. Anything seen once — a person walking through, LiDAR flying
+///   pixels, a hand — never reaches the rendered cloud, and unconfirmed voxels that are not re-observed
+///   within `maxUnconfirmedAge` integrations are dropped.
+/// * **Fusion.** Repeated observations fuse into a weight-capped running mean of position and color.
+/// * **Carving.** Every integration projects the in-view voxels (chunk-culled) into the depth image. A
+///   ray that measures well beyond the voxel is a miss (weighted by ARKit confidence), a pixel with no
+///   usable measurement is a weak miss, and a measurement near the voxel is support. Unconfirmed voxels
+///   die on their first miss; confirmed voxels die when their log-odds score drops below the death
+///   threshold. Dead voxels are parked out of view immediately and physically removed at compaction.
+/// * **Carve-only integrations** (empty `samples`) let the app carve at a steady rate between keyframes.
 public struct DynamicVoxelMap: Sendable {
     public struct Config: Sendable, Equatable {
         public var cellSize: Float = 0.02
@@ -110,16 +112,28 @@ public struct DynamicVoxelMap: Sendable {
         public var hitIncrement: Int8 = 2
         /// Score removed when a high-confidence ray passes through the cell.
         public var missDecrement: Int8 = 4
+        /// Score removed when a medium-confidence ray passes through the cell.
+        public var mediumMissDecrement: Int8 = 2
+        /// Score removed when an in-view voxel has no usable measurement at all.
+        public var unmeasuredMissDecrement: Int8 = 1
         public var initialOccupancy: Int8 = 2
         public var maxOccupancy: Int8 = 12
-        /// At or below this score a voxel dies.
+        /// At or below this score a confirmed voxel dies.
         public var deathThreshold: Int8 = -4
+        /// Observations needed before a voxel is shown.
+        public var confirmHits: UInt8 = 2
+        /// Unconfirmed voxels not re-observed within this many integrations are dropped.
+        public var maxUnconfirmedAge: UInt16 = 24
+        /// Every this many integrations, sweep the whole map for stale unconfirmed voxels.
+        public var unconfirmedSweepInterval: UInt16 = 8
         /// Running-mean cap: smaller adapts faster to slow changes, larger denoises more.
         public var maxFusionWeight: UInt8 = 12
+        /// Minimum ARKit confidence (0 low, 1 medium, 2 high) of a depth pixel allowed to carve.
+        public var carveMinConfidence: UInt8 = 1
         public var depthMarginMeters: Float = 0.04
         public var depthMarginRatio: Float = 0.03
         public var carveMinDepth: Float = 0.15
-        public var carveMaxDepth: Float = 5.0
+        public var carveMaxDepth: Float = 8.0
         public var compactionDeadFraction: Float = 0.02
         public var minCompactionDead: Int = 2_000
 
@@ -144,34 +158,39 @@ public struct DynamicVoxelMap: Sendable {
 
     /// What changed in one `integrate` call, in the form the GPU mirror needs.
     public struct Integration: Sendable {
+        /// New entries, index-aligned with `points`; unconfirmed ones are parked out of view.
         public var appended: [PackedPoint] = []
         public var updates: [PointUpdate] = []
         public var fused = 0
+        public var confirmed = 0
         public var supported = 0
         public var missed = 0
         public var killed = 0
         public var dropped = 0
-        /// When true the caller must replace its whole mirror with `points`; `appended`/`updates` are then empty.
+        /// When true the caller must replace its whole mirror with `renderablePoints`.
         public var compacted = false
         public var state: VoxelGrid.State = .accepting
         public var liveCount = 0
+        public var confirmedCount = 0
     }
 
     public private(set) var config: Config
     public private(set) var cellSize: Float
     public private(set) var state: VoxelGrid.State = .accepting
-    /// Index-aligned with the GPU buffer. Dead entries are parked far away until compaction.
+    /// Index-aligned with the GPU buffer (CPU truth; unconfirmed entries hold their real position).
     public private(set) var points: [PackedPoint] = []
     private var meta: [VoxelMeta] = []
     private var index: VoxelIndexMap
     private var chunkMin: [SIMD3<Float>] = []
     private var chunkMax: [SIMD3<Float>] = []
     public private(set) var deadCount = 0
+    public private(set) var confirmedCount = 0
     public private(set) var keyframeIndex: UInt16 = 0
     public private(set) var bounds = BoundingBox.empty
     public private(set) var compactions = 0
 
     static let parkedPosition = SIMD3<Float>(0, -1.0e6, 0)
+    static let parked = PackedPoint(position: parkedPosition, color: 0)
 
     public init(config: Config = .default) {
         self.config = config
@@ -181,27 +200,43 @@ public struct DynamicVoxelMap: Sendable {
 
     public var count: Int { points.count }
     public var liveCount: Int { points.count - deadCount }
-    /// Approximate CPU memory in bytes (points + meta + hash slots + chunk bounds).
     public var estimatedBytes: Int { points.count * 20 + index.slotBytes + chunkMin.count * 32 }
+
+    /// `points` with unconfirmed and dead voxels parked out of view — what the GPU should hold.
+    public var renderablePoints: [PackedPoint] {
+        var out = points
+        let threshold = config.confirmHits
+        for i in 0..<out.count where meta[i].isDead || meta[i].weight < threshold {
+            out[i] = DynamicVoxelMap.parked
+        }
+        return out
+    }
+
+    @inline(__always)
+    private func isConfirmed(_ m: VoxelMeta) -> Bool { !m.isDead && m.weight >= config.confirmHits }
 
     // MARK: Integration
 
-    /// Integrates one keyframe: carves free space with its depth image, then inserts its samples.
+    /// Integrates one frame: carves with its depth image, then inserts its samples (none for carve-only frames).
     public mutating func integrate(samples: [PackedPoint],
                                    depthMillimeters: [UInt16],
                                    confidence: [UInt8],
                                    intrinsics: Intrinsics,
                                    pose: Pose,
-                                   minCarveConfidence: UInt8 = 2) -> Integration {
+                                   minCarveConfidence: UInt8? = nil) -> Integration {
         keyframeIndex &+= 1
         var result = Integration()
 
         if depthMillimeters.count == intrinsics.pixelCount, confidence.count == intrinsics.pixelCount, !points.isEmpty {
             carve(depthMillimeters: depthMillimeters, confidence: confidence, intrinsics: intrinsics, pose: pose,
-                  minConfidence: minCarveConfidence, result: &result)
+                  minConfidence: minCarveConfidence ?? config.carveMinConfidence, result: &result)
         }
-
-        insert(samples, result: &result)
+        if !samples.isEmpty {
+            insert(samples, result: &result)
+        }
+        if config.unconfirmedSweepInterval > 0, keyframeIndex % config.unconfirmedSweepInterval == 0 {
+            sweepStale(result: &result)
+        }
 
         if points.count >= config.maxPoints {
             if state == .accepting {
@@ -224,6 +259,7 @@ public struct DynamicVoxelMap: Sendable {
         }
         result.state = state
         result.liveCount = liveCount
+        result.confirmedCount = confirmedCount
         return result
     }
 
@@ -231,6 +267,7 @@ public struct DynamicVoxelMap: Sendable {
         let hitInc = config.hitIncrement
         let maxOcc = config.maxOccupancy
         let maxW = config.maxFusionWeight
+        let confirmHits = config.confirmHits
         let kf = keyframeIndex
         result.appended.reserveCapacity(samples.count / 2)
         for s in samples {
@@ -239,15 +276,21 @@ public struct DynamicVoxelMap: Sendable {
                 let i = Int(found)
                 var m = meta[i]
                 if m.isDead {
-                    // Revive in place: something reappeared here before compaction ran.
+                    // Revive in place: something reappeared here before compaction ran. Stays parked until confirmed.
                     points[i] = s
-                    meta[i] = VoxelMeta(occupancy: config.initialOccupancy, weight: 1, lastSeen: kf)
+                    m = VoxelMeta(occupancy: config.initialOccupancy, weight: 1, lastSeen: kf)
+                    meta[i] = m
                     deadCount -= 1
-                    result.updates.append(PointUpdate(index: found, point: s))
                     extendChunk(i, s.position)
-                    bounds.formUnion(s.position)
+                    if confirmHits <= 1 {
+                        confirmedCount += 1
+                        bounds.formUnion(s.position)
+                        result.updates.append(PointUpdate(index: found, point: s))
+                    }
                     continue
                 }
+                if m.lastSeen == kf { continue }   // one observation per cell per frame
+                let wasConfirmed = m.weight >= confirmHits
                 let w = Float(min(m.weight, maxW))
                 let old = points[i]
                 let inv = 1 / (w + 1)
@@ -261,16 +304,28 @@ public struct DynamicVoxelMap: Sendable {
                 m.occupancy = min(maxOcc, m.occupancy &+ hitInc)
                 m.lastSeen = kf
                 meta[i] = m
-                result.updates.append(PointUpdate(index: found, point: fused))
                 result.fused += 1
+                if m.weight >= confirmHits {
+                    if !wasConfirmed {
+                        confirmedCount += 1
+                        result.confirmed += 1
+                        bounds.formUnion(p)
+                    }
+                    result.updates.append(PointUpdate(index: found, point: fused))
+                }
             } else if points.count < config.maxPoints {
                 let i = points.count
                 points.append(s)
                 meta.append(VoxelMeta(occupancy: config.initialOccupancy, weight: 1, lastSeen: kf))
                 index.set(key, Int32(i))
                 extendChunk(i, s.position)
-                bounds.formUnion(s.position)
-                result.appended.append(s)
+                if confirmHits <= 1 {
+                    confirmedCount += 1
+                    bounds.formUnion(s.position)
+                    result.appended.append(s)
+                } else {
+                    result.appended.append(DynamicVoxelMap.parked)
+                }
             } else {
                 result.dropped += 1
             }
@@ -287,8 +342,11 @@ public struct DynamicVoxelMap: Sendable {
         let fw = Float(w), fh = Float(h)
         let minD = config.carveMinDepth, maxD = config.carveMaxDepth
         let marginM = config.depthMarginMeters, marginR = config.depthMarginRatio
-        let missDec = config.missDecrement, hitInc = config.hitIncrement, maxOcc = config.maxOccupancy
+        let missHigh = config.missDecrement, missMedium = config.mediumMissDecrement, missNone = config.unmeasuredMissDecrement
+        let hitInc = config.hitIncrement, maxOcc = config.maxOccupancy
         let death = config.deathThreshold
+        let confirmHits = config.confirmHits
+        let maxAge = config.maxUnconfirmedAge
         let kf = keyframeIndex
         let chunkSize = config.chunkSize
         let pad = SIMD3<Float>(repeating: cellSize)
@@ -302,6 +360,11 @@ public struct DynamicVoxelMap: Sendable {
                     for i in start..<end {
                         var mt = meta[i]
                         if mt.isDead { continue }
+                        let confirmed = mt.weight >= confirmHits
+                        if !confirmed, kf &- mt.lastSeen > maxAge {
+                            kill(i, result: &result)
+                            continue
+                        }
                         let p = points[i]
                         let pc = c0 * p.x + c1 * p.y + c2 * p.z + c3
                         let d = -pc.z
@@ -311,31 +374,73 @@ public struct DynamicVoxelMap: Sendable {
                         if u < 0 || v < 0 || u >= fw || v >= fh { continue }
                         let pi = Int(v) * w + Int(u)
                         let mm = depth[pi]
-                        if mm == 0 || conf[pi] < minConfidence { continue }
-                        let measured = Float(mm) * 0.001
-                        let margin = max(marginM, marginR * d)
-                        if measured > d + margin {
-                            mt.occupancy = mt.occupancy &- missDec
-                            result.missed += 1
-                            if mt.occupancy <= death {
-                                meta[i] = .dead
-                                deadCount += 1
-                                result.killed += 1
-                                let parked = PackedPoint(position: DynamicVoxelMap.parkedPosition, color: 0)
-                                points[i] = parked
-                                result.updates.append(PointUpdate(index: Int32(i), point: parked))
-                            } else {
-                                meta[i] = mt
+                        let cf = conf[pi]
+                        var decrement: Int8 = 0
+                        if mm == 0 || cf < minConfidence {
+                            decrement = missNone
+                        } else {
+                            let measured = Float(mm) * 0.001
+                            let margin = max(marginM, marginR * d)
+                            if measured > d + margin {
+                                decrement = cf >= 2 ? missHigh : missMedium
+                            } else if abs(measured - d) <= margin {
+                                if mt.lastSeen != kf {
+                                    mt.weight = mt.weight == 255 ? 255 : mt.weight + 1
+                                    mt.occupancy = min(maxOcc, mt.occupancy &+ hitInc)
+                                    mt.lastSeen = kf
+                                    meta[i] = mt
+                                    result.supported += 1
+                                    if !confirmed, mt.weight >= confirmHits {
+                                        confirmedCount += 1
+                                        result.confirmed += 1
+                                        bounds.formUnion(p.position)
+                                        result.updates.append(PointUpdate(index: Int32(i), point: p))
+                                    }
+                                }
+                                continue
                             }
-                        } else if abs(measured - d) <= margin {
-                            mt.occupancy = min(maxOcc, mt.occupancy &+ hitInc)
-                            mt.lastSeen = kf
-                            meta[i] = mt
-                            result.supported += 1
+                            // Otherwise the voxel is occluded by something nearer: no evidence either way.
+                        }
+                        if decrement > 0 {
+                            result.missed += 1
+                            if !confirmed {
+                                kill(i, result: &result)
+                            } else {
+                                mt.occupancy = mt.occupancy &- decrement
+                                if mt.occupancy <= death {
+                                    kill(i, result: &result)
+                                } else {
+                                    meta[i] = mt
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+
+    @inline(__always)
+    private mutating func kill(_ i: Int, result: inout Integration) {
+        if isConfirmed(meta[i]) {
+            confirmedCount -= 1
+            result.updates.append(PointUpdate(index: Int32(i), point: DynamicVoxelMap.parked))
+        }
+        meta[i] = .dead
+        points[i] = DynamicVoxelMap.parked
+        deadCount += 1
+        result.killed += 1
+    }
+
+    /// Drops unconfirmed voxels that were never re-observed, wherever they are.
+    private mutating func sweepStale(result: inout Integration) {
+        let maxAge = config.maxUnconfirmedAge
+        let confirmHits = config.confirmHits
+        let kf = keyframeIndex
+        for i in 0..<meta.count {
+            let mt = meta[i]
+            if mt.isDead || mt.weight >= confirmHits { continue }
+            if kf &- mt.lastSeen > maxAge { kill(i, result: &result) }
         }
     }
 
@@ -453,10 +558,14 @@ public struct DynamicVoxelMap: Sendable {
         chunkMin.removeAll(keepingCapacity: true)
         chunkMax.removeAll(keepingCapacity: true)
         bounds = .empty
+        confirmedCount = 0
         for i in 0..<points.count {
             let p = points[i].position
             extendChunk(i, p)
-            bounds.formUnion(p)
+            if isConfirmed(meta[i]) {
+                confirmedCount += 1
+                bounds.formUnion(p)
+            }
         }
     }
 }

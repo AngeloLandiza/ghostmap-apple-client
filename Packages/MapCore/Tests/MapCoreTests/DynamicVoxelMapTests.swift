@@ -37,17 +37,20 @@ final class DynamicVoxelMapTests: XCTestCase {
         XCTAssertNil(intrinsics.project(cameraPoint: SIMD3<Float>(0, 0, 1)))  // behind the camera (+z)
     }
 
-    func testRepeatedObservationFusesInsteadOfAppending() {
+    func testSecondObservationConfirmsInsteadOfAppending() {
         var map = DynamicVoxelMap()
         let first = integrate(&map, depth(wallMM: 2000))
-        XCTAssertEqual(first.appended.count, 32 * 24)   // every pixel its own voxel
+        XCTAssertEqual(first.appended.count, 32 * 24)            // every pixel its own voxel, all parked
+        XCTAssertTrue(first.appended.allSatisfy { $0.y < -1000 })
+        XCTAssertEqual(map.confirmedCount, 0)                    // nothing shown after one look
         XCTAssertEqual(map.liveCount, 768)
         let second = integrate(&map, depth(wallMM: 2000))
         XCTAssertEqual(second.appended.count, 0)
-        XCTAssertEqual(second.fused, 768)
-        XCTAssertEqual(second.updates.count, 768)
-        XCTAssertEqual(map.liveCount, 768)
+        XCTAssertEqual(second.updates.count, 768)                // all 768 revealed at their real position
+        XCTAssertTrue(second.updates.allSatisfy { $0.point.y > -1000 })
+        XCTAssertEqual(map.confirmedCount, 768)
         XCTAssertEqual(second.missed, 0)
+        XCTAssertEqual(map.renderablePoints.filter { $0.y > -1000 }.count, 768)
     }
 
     func testObjectThatLeavesIsCarvedAndCompacted() {
@@ -56,27 +59,46 @@ final class DynamicVoxelMapTests: XCTestCase {
         config.compactionDeadFraction = 0
         var map = DynamicVoxelMap(config: config)
         _ = integrate(&map, depth(wallMM: 2000, objectMM: 1000))
-        let withObject = map.liveCount
-        XCTAssertEqual(withObject, 768)  // 48 object pixels + 720 wall pixels
+        _ = integrate(&map, depth(wallMM: 2000, objectMM: 1000))   // object confirmed (seen twice)
+        XCTAssertEqual(map.confirmedCount, 768)                    // 48 object + 720 wall
 
         // The object is gone: rays now reach the wall at 2 m through the old object voxels.
         var killedTotal = 0
         var compacted = false
-        for _ in 0..<4 {
+        for _ in 0..<5 {
             let r = integrate(&map, depth(wallMM: 2000))
             killedTotal += r.killed
             compacted = compacted || r.compacted
         }
-        // initial 2, miss −4 → −2, second miss → −6 ≤ −4 → dead after two wall-only keyframes.
+        // occupancy 4 after two hits; high-confidence miss −4 → 0, second miss → −4 ≤ −4 → dead after two frames.
         XCTAssertEqual(killedTotal, 48)
         XCTAssertTrue(compacted)
         XCTAssertEqual(map.deadCount, 0)
-        XCTAssertEqual(map.liveCount, 768)      // 720 wall + 48 wall pixels revealed behind the object
-        XCTAssertEqual(map.points.count, 768)   // dead voxels physically removed
-        XCTAssertTrue(map.points.allSatisfy { $0.y > -100 })  // nothing parked
+        XCTAssertEqual(map.points.count, 768)          // 720 wall + 48 wall pixels revealed behind the object
+        XCTAssertEqual(map.confirmedCount, 768)
+        XCTAssertTrue(map.points.allSatisfy { $0.y > -100 })
     }
 
-    func testCapCoarsensThenFillsAndFreesAfterCarving() {
+    func testTransientObservationNeverShowsAndIsPurged() {
+        var config = DynamicVoxelMap.Config()
+        config.maxUnconfirmedAge = 2
+        config.unconfirmedSweepInterval = 1
+        var map = DynamicVoxelMap(config: config)
+        _ = integrate(&map, depth(wallMM: 2000, objectMM: 1000))   // object seen once
+        // Look the other way three times: the 768 unconfirmed voxels age out and are dropped without ever rendering.
+        let turned = Pose(translation: .zero, rotation: simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0)))
+        let d = depth(wallMM: 3000)
+        var killed = 0
+        for _ in 0..<3 {
+            killed += map.integrate(samples: [], depthMillimeters: d, confidence: [UInt8](repeating: 2, count: d.count),
+                                    intrinsics: intrinsics, pose: turned).killed
+        }
+        XCTAssertEqual(killed, 768)
+        XCTAssertEqual(map.confirmedCount, 0)
+        XCTAssertEqual(map.liveCount, 0)
+    }
+
+    func testCapCoarsensAtTheLimit() {
         var config = DynamicVoxelMap.Config()
         config.maxPoints = 500
         var map = DynamicVoxelMap(config: config)
@@ -90,13 +112,27 @@ final class DynamicVoxelMapTests: XCTestCase {
     func testPointsBehindCameraAreNotCarved() {
         var map = DynamicVoxelMap()
         _ = integrate(&map, depth(wallMM: 2000))
-        // Look the other way: a pose rotated 180° about Y sees nothing of the wall, so no misses.
+        _ = integrate(&map, depth(wallMM: 2000))
         let turned = Pose(translation: .zero, rotation: simd_quatf(angle: .pi, axis: SIMD3<Float>(0, 1, 0)))
         let d = depth(wallMM: 3000)
         let r = map.integrate(samples: [], depthMillimeters: d, confidence: [UInt8](repeating: 2, count: d.count),
                               intrinsics: intrinsics, pose: turned)
         XCTAssertEqual(r.missed, 0)
         XCTAssertEqual(r.killed, 0)
-        XCTAssertEqual(map.liveCount, 768)
+        XCTAssertEqual(map.confirmedCount, 768)
+    }
+
+    func testUnmeasuredPixelsErodeConfirmedVoxelsSlowly() {
+        var map = DynamicVoxelMap()
+        _ = integrate(&map, depth(wallMM: 2000))
+        _ = integrate(&map, depth(wallMM: 2000))          // confirmed, occupancy 4
+        // Depth image with no returns at all: weak misses of −1 per frame → dead after 8 frames (4 → −4).
+        let none = [UInt16](repeating: 0, count: 768)
+        var killed = 0
+        for _ in 0..<8 {
+            killed += map.integrate(samples: [], depthMillimeters: none, confidence: [UInt8](repeating: 0, count: 768),
+                                    intrinsics: intrinsics, pose: .identity).killed
+        }
+        XCTAssertEqual(killed, 768)
     }
 }

@@ -127,6 +127,10 @@ final class ARSessionController: NSObject, ARSessionDelegate {
     private(set) var relocalizingSince: Date?
     private(set) var interruptionCount = 0
     private var durations = DurationRing(capacity: 600)
+    private var lastIntakeTimestamp: TimeInterval = 0
+    /// Between keyframes, depth-only frames are sent at this rate so stale voxels get carved even when standing still.
+    var carveInterval: TimeInterval = 0.25
+    private(set) var carveFrames = 0
 
     init(context: MetalContext, logger: SessionLogger) {
         self.context = context
@@ -352,10 +356,17 @@ final class ARSessionController: NSObject, ARSessionDelegate {
         let decision = policy.evaluate(pose: Pose(matrix: camera.transform), timestamp: frame.timestamp, tracking: tracking)
         if case .keyframe = decision {
             keyframeCandidates += 1
+            lastIntakeTimestamp = frame.timestamp
             if let snapshot = FrameExtractor.snapshot(from: frame, intrinsics: depthIntrinsics, tracking: tracking) {
                 onKeyframe?(snapshot)
             } else {
                 logger.log(.capture, "keyframe snapshot failed (unexpected pixel format)", level: .error)
+            }
+        } else if tracking.isNormal, policy.mode != .paused, frame.timestamp - lastIntakeTimestamp >= carveInterval {
+            lastIntakeTimestamp = frame.timestamp
+            carveFrames += 1
+            if let snapshot = FrameExtractor.snapshot(from: frame, intrinsics: depthIntrinsics, tracking: tracking, includeColor: false, carveOnly: true) {
+                onKeyframe?(snapshot)
             }
         }
     }

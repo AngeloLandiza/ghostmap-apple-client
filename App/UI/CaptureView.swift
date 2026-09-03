@@ -100,7 +100,14 @@ struct CaptureView: View {
                 Toggle("Live depth points", isOn: Binding(get: { session.settings.showLivePoints }, set: { session.settings.showLivePoints = $0 }))
                 Toggle("Global cloud in main view", isOn: Binding(get: { session.settings.showGlobalCloudInMainView }, set: { session.settings.showGlobalCloudInMainView = $0 }))
                 Toggle("Ghost Map auto-orbit", isOn: Binding(get: { session.settings.ghostAutoOrbit }, set: { session.settings.ghostAutoOrbit = $0 }))
-                Toggle("High resolution (1 cm voxels)", isOn: Binding(get: { session.settings.highResolution }, set: { session.settings.highResolution = $0 })).disabled(session.isRecording)
+                Picker("Quality", selection: Binding(get: { session.settings.quality }, set: { session.settings.quality = $0 })) {
+                    ForEach(QualityPreset.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .disabled(session.isRecording)
+                Picker("Dynamic objects", selection: Binding(get: { session.settings.dynamicSensitivity }, set: { session.settings.dynamicSensitivity = $0 })) {
+                    ForEach(DynamicSensitivity.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .disabled(session.isRecording)
                 Toggle("4K color (30 fps)", isOn: Binding(get: { session.settings.highResolutionColor }, set: { session.settings.highResolutionColor = $0 })).disabled(session.isRecording)
                 Button { session.resetGhostView() } label: { Label("Reset Ghost Map view", systemImage: "arrow.counterclockwise") }
             } label: {

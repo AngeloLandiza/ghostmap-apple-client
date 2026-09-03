@@ -36,7 +36,8 @@ actor KeyframeProcessor {
          storage: StorageQueue,
          logger: SessionLogger,
          mapConfig: DynamicVoxelMap.Config = .default,
-         minConfidence: UInt8) {
+         minConfidence: UInt8,
+         unprojectionStride: Int = 1) {
         self.pointBuffer = pointBuffer
         self.trajectory = trajectory
         self.storage = storage
@@ -44,6 +45,7 @@ actor KeyframeProcessor {
         self.map = DynamicVoxelMap(config: mapConfig)
         var o = Unprojector.Options()
         o.minConfidence = minConfidence
+        o.stride = max(1, unprojectionStride)
         self.options = o
         self.stats.cellSize = mapConfig.cellSize
     }
@@ -52,7 +54,49 @@ actor KeyframeProcessor {
         options.minConfidence = c
     }
 
+    /// Applies an integration result to the GPU mirror.
+    private func apply(_ r: DynamicVoxelMap.Integration, cellBefore: Float) {
+        if r.compacted {
+            do {
+                try pointBuffer.replaceAll(map.renderablePoints)
+                if map.cellSize != cellBefore {
+                    stats.coarsened = true
+                    logger.log(.cloud, "cap reached; coarsened to \(map.cellSize) m cells, \(map.confirmedCount) points")
+                } else {
+                    logger.log(.cloud, "compacted: \(map.liveCount) live / \(map.confirmedCount) confirmed voxels")
+                }
+            } catch {
+                logger.log(.cloud, "replaceAll failed: \(error)", level: .error)
+            }
+        } else {
+            pointBuffer.update(r.updates)
+            pointBuffer.append(r.appended)
+        }
+        if r.state == .full, !loggedFull {
+            loggedFull = true
+            logger.log(.cloud, "global cloud full at \(map.liveCount) voxels; waiting for carving to free space", level: .default)
+        }
+        stats.removedPoints += r.killed
+        stats.carveMisses += r.missed
+        stats.points = map.confirmedCount
+        stats.gridState = r.state
+        stats.cellSize = map.cellSize
+        stats.bounds = map.bounds
+        stats.mapBytes = map.estimatedBytes
+    }
+
+    /// Depth-only frame: carve stale voxels, add nothing, persist nothing.
+    func carve(_ snapshot: KeyframeSnapshot) -> CloudStats {
+        let cellBefore = map.cellSize
+        let r = map.integrate(samples: [], depthMillimeters: DepthCodec.quantize(depthMeters: snapshot.depthMeters),
+                              confidence: snapshot.confidence, intrinsics: snapshot.intrinsics,
+                              pose: Pose(matrix: snapshot.cameraTransform))
+        apply(r, cellBefore: cellBefore)
+        return stats
+    }
+
     func process(_ snapshot: KeyframeSnapshot) -> CloudStats {
+        if snapshot.isCarveOnly { return carve(snapshot) }
         let start = ContinuousClock.now
 
         let mm = DepthCodec.quantize(depthMeters: snapshot.depthMeters)
@@ -85,29 +129,8 @@ actor KeyframeProcessor {
 
         let cellBefore = map.cellSize
         let r = map.integrate(samples: packed, depthMillimeters: mm, confidence: snapshot.confidence,
-                              intrinsics: snapshot.intrinsics, pose: record.pose, minCarveConfidence: 2)
-        if r.compacted {
-            do {
-                try pointBuffer.replaceAll(map.points)
-                if map.cellSize != cellBefore {
-                    stats.coarsened = true
-                    logger.log(.cloud, "cap reached; coarsened to \(map.cellSize) m cells, \(map.liveCount) points")
-                } else {
-                    logger.log(.cloud, "compacted: \(map.liveCount) live points after removing carved voxels")
-                }
-            } catch {
-                logger.log(.cloud, "replaceAll failed: \(error)", level: .error)
-            }
-        } else {
-            pointBuffer.update(r.updates)
-            pointBuffer.append(r.appended)
-        }
-        if r.state == .full, !loggedFull {
-            loggedFull = true
-            logger.log(.cloud, "global cloud full at \(map.liveCount) points; waiting for carving to free space", level: .default)
-        }
-        stats.removedPoints += r.killed
-        stats.carveMisses += r.missed
+                              intrinsics: snapshot.intrinsics, pose: record.pose)
+        apply(r, cellBefore: cellBefore)
         let accepted = r.appended
         trajectory.append(record.pose.translation)
         storage.append(record)
@@ -115,11 +138,6 @@ actor KeyframeProcessor {
         let d = ContinuousClock.now - start
         let ms = Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
         stats.keyframes += 1
-        stats.points = map.liveCount
-        stats.gridState = r.state
-        stats.cellSize = map.cellSize
-        stats.bounds = map.bounds
-        stats.mapBytes = map.estimatedBytes
         stats.lastProcessMs = ms
         stats.maxProcessMs = max(stats.maxProcessMs, ms)
         stats.pointsLastKeyframe = accepted.count

@@ -21,6 +21,8 @@ struct KeyframeSnapshot: Sendable {
     let luma: [UInt8]
     let chromaCb: [UInt8]
     let chromaCr: [UInt8]
+    /// True for the 4 Hz carve-only frames: depth is used to remove stale voxels, no points are added.
+    let isCarveOnly: Bool
 
     var hasColor: Bool { luma.count == width * height }
 }
@@ -29,7 +31,7 @@ struct KeyframeSnapshot: Sendable {
 /// delegate thread and costs well under a millisecond (≈ 0.25 MB of depth/confidence plus 49 152
 /// nearest-neighbour color samples); it never retains the frame.
 enum FrameExtractor {
-    static func snapshot(from frame: ARFrame, intrinsics: Intrinsics, tracking: TrackingState) -> KeyframeSnapshot? {
+    static func snapshot(from frame: ARFrame, intrinsics: Intrinsics, tracking: TrackingState, includeColor: Bool = true, carveOnly: Bool = false) -> KeyframeSnapshot? {
         guard let sceneDepth = frame.sceneDepth, let confidenceMap = sceneDepth.confidenceMap else { return nil }
         let depthMap = sceneDepth.depthMap
         let width = CVPixelBufferGetWidth(depthMap)
@@ -78,7 +80,7 @@ enum FrameExtractor {
         var cr: [UInt8] = []
         let image = frame.capturedImage
         let format = CVPixelBufferGetPixelFormatType(image)
-        if (format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+        if includeColor, (format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
            CVPixelBufferGetPlaneCount(image) == 2 {
             CVPixelBufferLockBaseAddress(image, .readOnly)
             let iw = CVPixelBufferGetWidthOfPlane(image, 0)
@@ -131,6 +133,7 @@ enum FrameExtractor {
             confidence: confidence,
             luma: luma,
             chromaCb: cb,
-            chromaCr: cr)
+            chromaCr: cr,
+            isCarveOnly: carveOnly)
     }
 }
