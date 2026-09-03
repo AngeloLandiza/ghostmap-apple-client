@@ -142,7 +142,7 @@ final class ARSessionController: NSObject, ARSessionDelegate {
     // MARK: Lifecycle
 
     /// Starts world tracking with scene depth. Safe to call again to reset tracking.
-    func start() {
+    func start(highResolutionColor: Bool = false) {
         let config = ARWorldTrackingConfiguration()
         config.frameSemantics = [.sceneDepth]
         config.worldAlignment = .gravity
@@ -151,7 +151,10 @@ final class ARSessionController: NSObject, ARSessionDelegate {
         config.environmentTexturing = .none
         config.isAutoFocusEnabled = true
         config.isLightEstimationEnabled = false
-        if let format = ARSessionController.chooseVideoFormat() {
+        if highResolutionColor, let format = ARWorldTrackingConfiguration.recommendedVideoFormatFor4KResolution {
+            config.videoFormat = format
+            videoFormatDescription = ARSessionController.describe(format) + " 4K"
+        } else if let format = ARSessionController.chooseVideoFormat() {
             config.videoFormat = format
             videoFormatDescription = ARSessionController.describe(format)
         }

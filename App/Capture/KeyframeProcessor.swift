@@ -8,6 +8,9 @@ struct CloudStats: Sendable, Equatable {
     var points = 0
     var gridState: VoxelGrid.State = .accepting
     var cellSize: Float = 0.02
+    var removedPoints = 0
+    var carveMisses = 0
+    var mapBytes = 0
     var bounds = BoundingBox.empty
     var lastProcessMs: Double = 0
     var maxProcessMs: Double = 0
@@ -22,7 +25,7 @@ actor KeyframeProcessor {
     private let trajectory: TrajectoryBuffer
     private let storage: StorageQueue
     private let logger: SessionLogger
-    private var grid: VoxelGrid
+    private var map: DynamicVoxelMap
     private var options: Unprojector.Options
     private var seq: UInt32 = 0
     private var loggedFull = false
@@ -32,17 +35,17 @@ actor KeyframeProcessor {
          trajectory: TrajectoryBuffer,
          storage: StorageQueue,
          logger: SessionLogger,
-         gridConfig: VoxelGrid.Config = .default,
+         mapConfig: DynamicVoxelMap.Config = .default,
          minConfidence: UInt8) {
         self.pointBuffer = pointBuffer
         self.trajectory = trajectory
         self.storage = storage
         self.logger = logger
-        self.grid = VoxelGrid(config: gridConfig)
+        self.map = DynamicVoxelMap(config: mapConfig)
         var o = Unprojector.Options()
         o.minConfidence = minConfidence
         self.options = o
-        self.stats.cellSize = gridConfig.cellSize
+        self.stats.cellSize = mapConfig.cellSize
     }
 
     func setMinConfidence(_ c: UInt8) {
@@ -80,35 +83,43 @@ actor KeyframeProcessor {
             packed = Unprojector.unprojectPacked(record: record, options: options) { _ in gray }
         }
 
-        var accepted = grid.insert(packed)
-        if grid.state == .capReached {
-            let before = pointBuffer.count
-            let kept = pointBuffer.withPoints { grid.coarsen(existingPoints: $0) }
+        let cellBefore = map.cellSize
+        let r = map.integrate(samples: packed, depthMillimeters: mm, confidence: snapshot.confidence,
+                              intrinsics: snapshot.intrinsics, pose: record.pose, minCarveConfidence: 2)
+        if r.compacted {
             do {
-                try pointBuffer.replaceAll(kept)
-                stats.coarsened = true
-                logger.log(.cloud, "cap reached at \(before) points; coarsened to \(grid.cellSize) m cells, kept \(kept.count)")
+                try pointBuffer.replaceAll(map.points)
+                if map.cellSize != cellBefore {
+                    stats.coarsened = true
+                    logger.log(.cloud, "cap reached; coarsened to \(map.cellSize) m cells, \(map.liveCount) points")
+                } else {
+                    logger.log(.cloud, "compacted: \(map.liveCount) live points after removing carved voxels")
+                }
             } catch {
-                logger.log(.cloud, "coarsen failed: \(error)", level: .error)
+                logger.log(.cloud, "replaceAll failed: \(error)", level: .error)
             }
-            accepted = grid.insert(packed)
+        } else {
+            pointBuffer.update(r.updates)
+            pointBuffer.append(r.appended)
         }
-        if grid.state == .full, !loggedFull {
+        if r.state == .full, !loggedFull {
             loggedFull = true
-            logger.log(.cloud, "global cloud full at \(grid.count) points; no longer accepting", level: .default)
+            logger.log(.cloud, "global cloud full at \(map.liveCount) points; waiting for carving to free space", level: .default)
         }
-
-        pointBuffer.append(accepted)
+        stats.removedPoints += r.killed
+        stats.carveMisses += r.missed
+        let accepted = r.appended
         trajectory.append(record.pose.translation)
         storage.append(record)
 
         let d = ContinuousClock.now - start
         let ms = Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
         stats.keyframes += 1
-        stats.points = pointBuffer.count
-        stats.gridState = grid.state
-        stats.cellSize = grid.cellSize
-        stats.bounds = pointBuffer.bounds
+        stats.points = map.liveCount
+        stats.gridState = r.state
+        stats.cellSize = map.cellSize
+        stats.bounds = map.bounds
+        stats.mapBytes = map.estimatedBytes
         stats.lastProcessMs = ms
         stats.maxProcessMs = max(stats.maxProcessMs, ms)
         stats.pointsLastKeyframe = accepted.count

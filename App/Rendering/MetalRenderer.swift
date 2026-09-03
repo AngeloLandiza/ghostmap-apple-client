@@ -133,7 +133,8 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                         pointSize: cloudPointSizePx,
                         alpha: cloudAlpha,
                         stride: UInt32(stride),
-                        count: UInt32(snap.count))
+                        count: UInt32(snap.count),
+                        perspective: 1)
                     slot.contents().advanced(by: MetalRenderer.cloudUniformOffset).storeBytes(of: cu, as: RMCloudUniforms.self)
                     enc.pushDebugGroup("GlobalCloud")
                     enc.setRenderPipelineState(pipeline.cloudPoints)

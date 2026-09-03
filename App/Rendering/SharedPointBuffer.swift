@@ -114,6 +114,27 @@ final class SharedPointBuffer: @unchecked Sendable {
         SharedPointBuffer.logger.notice("global cloud replaced: \(n) points")
     }
 
+    /// Rewrites existing points in place (fused positions/colors, parked dead voxels). A renderer may see a
+    /// single torn 16-byte point for one frame; that is cosmetic and accepted (see DECISIONS.md).
+    func update(_ updates: [DynamicVoxelMap.PointUpdate]) {
+        guard !updates.isEmpty else { return }
+        lock.withLockUnchecked { s in
+            let base = s.buffers[s.active].contents()
+            var b = s.bounds
+            for u in updates {
+                let i = Int(u.index)
+                guard i < s.count else { continue }
+                var p = u.point
+                withUnsafeBytes(of: &p) { src in
+                    if let a = src.baseAddress { base.advanced(by: i * PackedPoint.byteSize).copyMemory(from: a, byteCount: PackedPoint.byteSize) }
+                }
+                if p.y > -1000 { b.formUnion(p.position) }
+            }
+            s.bounds = b
+            s.generation &+= 1
+        }
+    }
+
     /// Reads the current contents without copying. Safe because the active buffer's `[0, count)` region
     /// is never rewritten (see the class invariant).
     func withPoints<R>(_ body: (UnsafeBufferPointer<PackedPoint>) throws -> R) rethrows -> R {

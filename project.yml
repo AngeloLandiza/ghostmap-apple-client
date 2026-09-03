@@ -21,10 +21,14 @@ settings:
   configs:
     Debug:
       MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
-      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      GCC_OPTIMIZATION_LEVEL: "2"
+      ONLY_ACTIVE_ARCH: YES
     Release:
       MTL_ENABLE_DEBUG_INFO: NO
       SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+      GCC_OPTIMIZATION_LEVEL: "3"
 packages:
   MapCore:
     path: Packages/MapCore

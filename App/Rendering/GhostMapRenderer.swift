@@ -118,20 +118,22 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
         ringIndex = (ringIndex + 1) % uniformRing.count
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
         encodeScene(enc, viewProjection: camera.viewProjection(aspect: aspect), slot: slot,
-                    pointSize: pointSizePx, alpha: pointAlpha, maxPoints: maxPoints, includeCamera: true)
+                    pointSize: pointSizePx, alpha: pointAlpha, maxPoints: maxPoints, includeCamera: true,
+                    perspective: camera.mode == .orbit)
         enc.endEncoding()
         cb.present(drawable)
         cb.commit()
     }
 
     private func encodeScene(_ enc: MTLRenderCommandEncoder, viewProjection vp: simd_float4x4, slot: MTLBuffer,
-                             pointSize: Float, alpha: Float, maxPoints: Int, includeCamera: Bool) {
+                             pointSize: Float, alpha: Float, maxPoints: Int, includeCamera: Bool, perspective: Bool) {
         let uniformsIndex = Int(RMBufferIndexUniforms.rawValue)
         let snap = pointBuffer.snapshot()
         if snap.count > 0 {
             let stride = Decimation.stride(count: snap.count, target: maxPoints)
             let cu = RMCloudUniforms(viewProjection: vp, pointSize: pointSize, alpha: alpha,
-                                     stride: UInt32(stride), count: UInt32(snap.count))
+                                     stride: UInt32(stride), count: UInt32(snap.count),
+                                     perspective: perspective ? 1 : 0)
             slot.contents().storeBytes(of: cu, as: RMCloudUniforms.self)
             enc.pushDebugGroup("GhostCloud")
             enc.setRenderPipelineState(pipeline.cloudPoints)
@@ -224,7 +226,7 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
 
         guard let cb = context.commandQueue.makeCommandBuffer(), let enc = cb.makeRenderCommandEncoder(descriptor: rpd) else { return nil }
         encodeScene(enc, viewProjection: cam.viewProjection(aspect: 1), slot: slot,
-                    pointSize: 3, alpha: 1, maxPoints: 1_000_000, includeCamera: false)
+                    pointSize: 3, alpha: 1, maxPoints: 1_000_000, includeCamera: false, perspective: false)
         enc.endEncoding()
         cb.commit()
         cb.waitUntilCompleted()

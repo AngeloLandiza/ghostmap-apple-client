@@ -100,7 +100,7 @@ vertex PointOut rm_live_point_vertex(uint vid [[vertex_id]],
     const float4 cameraPoint = float4(imagePoint.x, -imagePoint.y, -imagePoint.z, 1.0f);
     const float4 worldPoint = u.cameraToWorld * cameraPoint;
     out.position = u.viewProjection * worldPoint;
-    out.pointSize = u.pointSize;
+    out.pointSize = clamp(u.pointSize * 1.2f / max(out.position.w, 0.05f), 2.0f, u.pointSize * 2.5f);
 
     constexpr sampler s(mag_filter::linear, min_filter::linear, address::clamp_to_edge);
     const float2 tc = float2((float(px) + 0.5f) / float(u.depthWidth), (float(py) + 0.5f) / float(u.depthHeight));
@@ -125,7 +125,7 @@ vertex PointOut rm_cloud_vertex(uint vid [[vertex_id]],
     }
     const RMPointVertex p = points[index];
     out.position = u.viewProjection * float4(p.x, p.y, p.z, 1.0f);
-    out.pointSize = u.pointSize;
+    out.pointSize = u.perspective ? clamp(u.pointSize * 1.6f / max(out.position.w, 0.05f), 1.5f, u.pointSize * 3.0f) : u.pointSize;
     float4 c = rm_unpack_color(p.color);
     c.a = u.alpha;
     out.color = c;

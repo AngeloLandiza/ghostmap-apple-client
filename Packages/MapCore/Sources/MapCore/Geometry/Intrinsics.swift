@@ -59,5 +59,14 @@ public struct Intrinsics: Sendable, Equatable, Codable {
         )
     }
 
+    /// Projects a camera-space point (ARKit convention: x right, y up, −z forward) to pixel coordinates and
+    /// depth along the optical axis. Returns nil for points at or behind the camera. Inverse of `unproject`.
+    @inlinable
+    public func project(cameraPoint p: SIMD3<Float>) -> (u: Float, v: Float, depth: Float)? {
+        let depth = -p.z
+        guard depth > 0 else { return nil }
+        return (fx * p.x / depth + cx, fy * (-p.y) / depth + cy, depth)
+    }
+
     public var pixelCount: Int { width * height }
 }

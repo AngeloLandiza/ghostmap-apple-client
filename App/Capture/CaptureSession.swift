@@ -117,7 +117,7 @@ final class CaptureSession {
     private var isStarting = false
 
     var settings: CaptureSettings {
-        didSet { applySettings() }
+        didSet { applySettings(previous: oldValue) }
     }
 
     init(env: AppEnvironment) throws {
@@ -146,7 +146,7 @@ final class CaptureSession {
     func startPreview() {
         guard phase == .idle else { return }
         controller.policy.mode = ThermalMonitor.policyMode(for: env.thermal.state)
-        controller.start()
+        controller.start(highResolutionColor: settings.highResolutionColor)
         phase = .preview
         startStatusLoop()
     }
@@ -176,7 +176,7 @@ final class CaptureSession {
             iosVersion: UIDevice.current.systemVersion,
             appVersion: DeviceInfo.appVersion,
             status: .recording,
-            voxelSizeMeters: VoxelGrid.Config.default.cellSize)
+            voxelSizeMeters: settings.mapConfig.cellSize)
         do {
             _ = try env.store.create(manifest: manifest)
             let log = SessionLogger(fileURL: env.store.url(for: .sessionLog, in: id))
@@ -188,7 +188,8 @@ final class CaptureSession {
             pointBuffer.removeAll()
             trajectory.removeAll()
             processor = KeyframeProcessor(pointBuffer: pointBuffer, trajectory: trajectory, storage: storage,
-                                          logger: log, minConfidence: settings.minConfidence)
+                                          logger: log, mapConfig: settings.mapConfig, minConfidence: settings.minConfidence)
+            controller.policy.config = settings.policyConfig
             cloudStats = CloudStats()
             droppedKeyframes = 0
             inFlightKeyframes = 0
@@ -205,7 +206,7 @@ final class CaptureSession {
             controller.setIntake(true)
             phase = .recording
             let c = controller.policy.config
-            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(VoxelGrid.Config.default.cellSize)m cap=\(VoxelGrid.Config.default.maxPoints)")
+            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(settings.mapConfig.cellSize)m cap=\(settings.mapConfig.maxPoints) highRes=\(settings.highResolution)")
         } catch {
             phase = .failed("Could not start recording: \(error)")
             logger.log(.app, "recording start failed: \(error)", level: .error)
@@ -363,7 +364,10 @@ final class CaptureSession {
 
     // MARK: Settings & thermal
 
-    private func applySettings() {
+    private func applySettings(previous: CaptureSettings) {
+        if previous.highResolutionColor != settings.highResolutionColor, phase == .preview || phase == .saved {
+            controller.start(highResolutionColor: settings.highResolutionColor)
+        }
         mainRenderer.settings = settings
         ghostRenderer.camera.autoOrbit = settings.ghostAutoOrbit
         // The toggle only rotates in orbit mode, so it selects the mode too (long-press still overrides).

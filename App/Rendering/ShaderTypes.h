@@ -59,6 +59,7 @@ typedef struct {
     float alpha;
     RM_UINT32 stride;                   // draw every stride-th point (vertex i reads point i * stride)
     RM_UINT32 count;                    // number of source points in the buffer
+    RM_UINT32 perspective;              // 1 = scale point size by 1/depth (perspective cameras)
 } RMCloudUniforms;
 
 /// Uniforms for line primitives (trajectory polyline, camera frustum).
