@@ -39,7 +39,7 @@ xcodegen generate
 Run the MapCore unit tests on the Mac:
 
 ```bash
-cd Packages/MapCore && swift test
+cd Packages/MapCore && swift test --scratch-path /tmp/mapcore-build   # scratch dir outside iCloud-synced folders
 ```
 
 Build, install and launch on the phone (find the identifiers with `xcrun devicectl list devices`; use the hardware UDID for `xcodebuild` and the CoreDevice identifier for `devicectl`):
@@ -47,10 +47,12 @@ Build, install and launch on the phone (find the identifiers with `xcrun devicec
 ```bash
 xcodebuild -project RoomMapper.xcodeproj -scheme RoomMapper \
   -destination 'platform=iOS,id=<UDID>' -allowProvisioningUpdates \
-  -derivedDataPath build build
-xcrun devicectl device install app --device <COREDEVICE-ID> build/Build/Products/Debug-iphoneos/RoomMapper.app
+  -derivedDataPath /tmp/roommapper-dd build
+xcrun devicectl device install app --device <COREDEVICE-ID> /tmp/roommapper-dd/Build/Products/Debug-iphoneos/RoomMapper.app
 xcrun devicectl device process launch --device <COREDEVICE-ID> --console tech.alandiza.roommapper
 ```
+
+Build outputs must live outside iCloud-synced folders (hence `/tmp`): files created inside `~/Documents` pick up Finder/iCloud extended attributes and `codesign` refuses them with "resource fork, Finder information, or similar detritus not allowed".
 
 Before the first run: unlock the phone and keep it unlocked, enable Developer Mode (Settings → Privacy & Security → Developer Mode), and after the first install trust the developer profile (Settings → General → VPN & Device Management). Signing is automatic with the team ID in `project.yml`.
 
