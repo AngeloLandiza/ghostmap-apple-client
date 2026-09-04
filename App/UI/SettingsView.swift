@@ -305,10 +305,11 @@ struct SettingsView: View {
                 }
                 .font(.footnote)
             }
+            MarkerShareButton()
         } header: {
             Text("Marker origin")
         } footer: {
-            Text("Print docs/ghostmap-marker.pdf at 100 % — the outer square must measure \(Int(MarkerReference.defaultWidth * 100)) cm — tape it flat where everyone can see it and point the phone at it. Every phone that sees the same marker shares one coordinate frame, so party poses line up. Set the size here if you printed it at another scale.")
+            MarkerGuide()
         }
     }
 

@@ -45,7 +45,7 @@ measures 20.0 cm. Without a PDF printer, print `App/Marker/ghostmap-marker.png` 
 black square plus its white margin is 20 cm wide. Matte paper tracks better than glossy; tape it
 flat — a curled or folded sheet moves the origin. Regenerate either file with
 `scripts/rm.sh marker` (or `python3 scripts/make-marker.py`); it is deterministic, so the output is
-byte-identical every time and every phone can use the same sheet.
+byte-identical every time and every phone can use the same sheet. On the phone, tap **Get the marker (PDF)** on the Party screen or in Settings to AirPrint or AirDrop the same file.
 
 **Use it.** Tape the marker where everyone can see it, open the capture screen and point the phone
 at it from about 0.5–2 m until the strip reads `Marker: aligned`. From then on:

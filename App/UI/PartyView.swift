@@ -127,6 +127,11 @@ struct PartyView: View {
             Stepper(value: $maxParticipants, in: 1...8) {
                 LabeledContent("Max phones", value: "\(maxParticipants)")
             }
+            if env.settings.markerOrigin {
+                MarkerShareButton()
+            } else {
+                Button("Use a printed marker as the origin") { env.settings.markerOrigin = true }
+            }
             Button {
                 Task { await party.create(name: trimmedName, markerOrigin: env.settings.markerOrigin, maxParticipants: maxParticipants) }
             } label: {
@@ -139,9 +144,11 @@ struct PartyView: View {
         } header: {
             Text("Start")
         } footer: {
-            Text(env.settings.markerOrigin
-                 ? "The party's origin is the printed marker, so every phone that sees the same sheet shares one coordinate frame. Print docs/ghostmap-marker.pdf and tape it up before you start."
-                 : "Marker origin is off in Settings, so the party's origin is where this phone started. Other phones' clouds will not line up with yours until you turn it on.")
+            if env.settings.markerOrigin {
+                MarkerGuide()
+            } else {
+                Text("Marker origin is off, so the party's origin is where this phone started. Other phones' clouds will not line up with yours until you turn it on.")
+            }
         }
     }
 

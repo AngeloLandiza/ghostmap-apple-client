@@ -39,6 +39,13 @@ enum MarkerReference {
     static let minimumWidth: Double = 0.05
     static let maximumWidth: Double = 2.0
 
+    /// The printable PDF copied into the bundle alongside the PNG (nil only if the resource phase
+    /// dropped it), used by the in-app "Get the marker" share button.
+    static var printableURL: URL? {
+        Bundle.main.url(forResource: name, withExtension: "pdf", subdirectory: subdirectory)
+            ?? Bundle.main.url(forResource: name, withExtension: "pdf")
+    }
+
     /// Clamps a user-entered width to the trackable range.
     static func clampWidth(_ width: Double) -> Double {
         min(maximumWidth, max(minimumWidth, width))

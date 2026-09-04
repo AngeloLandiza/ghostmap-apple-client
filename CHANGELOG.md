@@ -29,7 +29,9 @@ Ghostmap accounts, cloud maps and collaborative parties (Phase 2 §5).
   a frustum per peer, and the Ghost Map strip gains a party line.
 - **Pose publishing** over Ably REST at up to 10 Hz, sent only when the camera actually moved.
 - **Marker origin**: a printable 20 cm high-contrast marker (`docs/ghostmap-marker.pdf`,
-  regenerated with `scripts/rm.sh marker`) detected as an `ARReferenceImage`; while it is in view
+  regenerated with `scripts/rm.sh marker`; the same PDF is bundled behind a **Get the marker**
+  share button on the Party screen and in Settings, with a three-step print/tape/aim checklist)
+  detected as an `ARReferenceImage`; while it is in view
   poses are expressed in its frame (`aligned: true`) instead of the raw ARKit world pose, which is
   what lets several phones' clouds land on top of each other in a party.
 - **Tests**: the app's first XCUITest target, `RoomMapperUITests` (`scripts/rm.sh test-ui`),

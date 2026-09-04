@@ -27,6 +27,7 @@ Outputs
   App/Marker/ghostmap-marker.png   2000 x 2000 8-bit RGB, pHYs = 10000 px/m
                                    (so "print at 100 %" gives exactly 20 cm)
   docs/ghostmap-marker.pdf         A4 page with the marker at exactly 20 cm plus
+  App/Marker/ghostmap-marker.pdf   the same PDF, bundled for the in-app "Get the marker" button;
                                    a measuring bar; skip with --no-pdf
 
 Usage
@@ -318,6 +319,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--size", type=int, default=DEFAULT_SIZE, help=f"pixels per side, multiple of {UNITS}")
     ap.add_argument("--png", type=Path, default=root / "App" / "Marker" / "ghostmap-marker.png")
     ap.add_argument("--pdf", type=Path, default=root / "docs" / "ghostmap-marker.pdf")
+    ap.add_argument("--bundle-pdf", type=Path, default=root / "App" / "Marker" / "ghostmap-marker.pdf",
+                    help="copy of the PDF shipped in the app bundle for the in-app Get the marker button")
     ap.add_argument("--no-pdf", action="store_true", help="only write the PNG")
     ap.add_argument("--check", action="store_true", help="compare with the files on disk instead of writing")
     args = ap.parse_args(argv)
@@ -328,7 +331,9 @@ def main(argv: list[str]) -> int:
 
     ok = write_if_changed(args.png, png_bytes(args.size, compressed, args.seed), args.check)
     if not args.no_pdf:
-        ok &= write_if_changed(args.pdf, pdf_bytes(args.size, compressed, args.seed), args.check)
+        pdf = pdf_bytes(args.size, compressed, args.seed)
+        ok &= write_if_changed(args.pdf, pdf, args.check)
+        ok &= write_if_changed(args.bundle_pdf, pdf, args.check)
     return 0 if ok or not args.check else 1
 
 
