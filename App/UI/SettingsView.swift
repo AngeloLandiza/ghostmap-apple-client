@@ -24,6 +24,7 @@ struct SettingsView: View {
             Form {
                 backendSection
                 accountSection
+                markerSection
                 deviceSection
             }
             .navigationTitle("Settings")
@@ -253,6 +254,41 @@ struct SettingsView: View {
         ZStack {
             Color.gray.opacity(0.25)
             Image(systemName: "person.fill").foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Marker origin
+
+    /// Centimetres, so the stepper works in whole printable units instead of metres.
+    private var markerCentimetres: Binding<Int> {
+        Binding(
+            get: { Int((env.settings.markerPhysicalWidth * 100).rounded()) },
+            set: { env.settings.markerWidthMeters = MarkerReference.clampWidth(Double($0) / 100) }
+        )
+    }
+
+    @ViewBuilder
+    private var markerSection: some View {
+        Section {
+            Toggle("Use a printed marker", isOn: Binding(
+                get: { env.settings.markerOrigin },
+                set: { env.settings.markerOrigin = $0 }
+            ))
+            Stepper(value: markerCentimetres,
+                    in: Int(MarkerReference.minimumWidth * 100)...Int(MarkerReference.maximumWidth * 100)) {
+                LabeledContent("Marker size", value: "\(markerCentimetres.wrappedValue) cm")
+            }
+            .disabled(!env.settings.markerOrigin)
+            if markerCentimetres.wrappedValue != Int(MarkerReference.defaultWidth * 100) {
+                Button("Reset to \(Int(MarkerReference.defaultWidth * 100)) cm") {
+                    env.settings.markerWidthMeters = MarkerReference.defaultWidth
+                }
+                .font(.footnote)
+            }
+        } header: {
+            Text("Marker origin")
+        } footer: {
+            Text("Print docs/ghostmap-marker.pdf at 100 % — the outer square must measure \(Int(MarkerReference.defaultWidth * 100)) cm — tape it flat where everyone can see it and point the phone at it. Every phone that sees the same marker shares one coordinate frame, so party poses line up. Set the size here if you printed it at another scale.")
         }
     }
 

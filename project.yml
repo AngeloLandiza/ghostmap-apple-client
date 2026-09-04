@@ -40,6 +40,13 @@ targets:
       - path: App
         excludes:
           - "Resources/Info.plist"
+          - "Marker"
+      # Folder reference so the marker PNG keeps its Marker/ subdirectory inside the bundle, which is
+      # where MarkerReference looks for it — ARReferenceImage needs a CGImage loaded from a file, so
+      # no asset catalog is involved. Regenerate with `python3 scripts/make-marker.py`.
+      - path: App/Marker
+        type: folder
+        buildPhase: resources
     dependencies:
       - package: MapCore
     settings:

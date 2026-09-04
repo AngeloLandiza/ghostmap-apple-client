@@ -3,6 +3,7 @@
 #
 #   scripts/rm.sh setup        install XcodeGen and the Metal toolchain if missing
 #   scripts/rm.sh gen          regenerate RoomMapper.xcodeproj from project.yml
+#   scripts/rm.sh marker       regenerate the printable origin marker (PNG + PDF)
 #   scripts/rm.sh test         run the MapCore unit tests on the Mac
 #   scripts/rm.sh build [debug|release]   build for the connected iPhone (signed)
 #   scripts/rm.sh install      install the last build on the iPhone
@@ -129,6 +130,11 @@ cmd_pull_maps() {
   green "done: $(find "$dest" -name manifest.json | wc -l | tr -d ' ') map(s)"
 }
 
+cmd_marker() {
+  python3 "$ROOT/scripts/make-marker.py"
+  green "marker: App/Marker/ghostmap-marker.png + docs/ghostmap-marker.pdf (print at 100 %)"
+}
+
 cmd_devices() {
   pick_developer_dir
   xcrun devicectl list devices 2>/dev/null | sed -n '1,20p'
@@ -144,6 +150,7 @@ cmd_clean() {
 case "${1:-help}" in
   setup) cmd_setup;;
   gen) cmd_gen;;
+  marker) cmd_marker;;
   test) cmd_test;;
   build) cmd_build "${2:-debug}";;
   install) cmd_install;;

@@ -128,3 +128,54 @@ Every non-obvious choice in RoomMapper and why. Newest additions at the bottom o
 - **The app-layer DTOs have no XCTest target** (the project has none, and MapCore is for pure
   logic). `scripts/api-smoke/main.swift` compiles the models against MapCore on the Mac and asserts
   they decode payloads shaped like the real ones; the header says how to run it.
+
+## Marker origin (Phase 2 §5, added 2026-09-04)
+
+- **The marker is generated, not drawn.** `scripts/make-marker.py` (stdlib only: `zlib`, `struct`)
+  renders `App/Marker/ghostmap-marker.png` — 2000 × 2000 px, 8-bit RGB, `pHYs` = 10 000 px/m so
+  "print at 100 %" gives exactly 20 cm — and `docs/ghostmap-marker.pdf`, an A4 page carrying the
+  same square at 566.93 pt with a measuring bar. The PDF embeds the *same* zlib stream as the PNG's
+  `IDAT` via `/Predictor 15`, so there is no second image encoder to maintain. Both files are
+  committed: the PNG is a build input, and asking every user to run Python before printing would be
+  worse than 34 KB in git.
+- **Determinism over `random`.** The 8 × 8 payload comes from a hand-written xorshift64\*, not
+  `random.Random`, so the bytes never depend on the Python build. The generator retries until the
+  grid is 40–60 % black, differs from all three of its rotations, has ≥ 2 cells of each colour in
+  every row and column, and contains no uniform 3 × 3 block — the last one because large flat areas
+  are exactly what makes ARKit grade a reference image as low quality. `--check` re-derives
+  everything and diffs it against the files on disk.
+- **The orientation corner is explicit.** The top-left 2 × 2 cells are forced black and the other
+  three corners white. The seeded interior is already rotationally unique, but a corner a human can
+  see makes "which way up" obvious when taping the sheet to a wall, and it keeps the guarantee if
+  the seed ever changes. A 2-unit (4 mm) white gap separates the payload from the black frame so
+  payload cells never fuse with it.
+- **Folder reference, not an asset catalog.** `ARReferenceImage` needs a `CGImage`, and asset
+  catalogs would only add a build step. project.yml adds `App/Marker` as a folder reference in the
+  resources phase, so the file lands at `Marker/ghostmap-marker.png` in the bundle unmodified (no
+  PNG re-encoding) and `MarkerReference` reads it with `Bundle.main.url(forResource:…)`. The loader
+  also falls back to the bundle root so a flattened resource build keeps working. Decoding costs
+  ~16 MB of resident memory for the lifetime of the AR configuration; that is the price of a 2000 px
+  reference image and is paid once per session.
+- **`.lost` still counts as aligned.** `MarkerOrigin.State` is `.none` / `.tracking` / `.lost`, and
+  `isAligned` is true for both `.tracking` and `.lost`. Once ARKit has placed the image anchor the
+  world→origin transform stays valid whether or not the marker is in view — the anchor lives in the
+  world frame — so poses stay in the marker frame and the wire `aligned` flag stays `true`. `.lost`
+  only tells the user that drift is no longer being corrected, which is why the chip goes amber
+  rather than grey. Only `.none` (nothing ever seen) sends `aligned: false`.
+- **A stale-timeout demotes the origin.** ARKit does not reliably deliver a final `isTracked == false`
+  anchor update, so `MarkerOrigin.tick(timestamp:staleAfter:)` runs in the frame callback (two float
+  comparisons, well inside the 2 ms budget) and drops `.tracking` to `.lost` after 1 s without a
+  tracked observation. `didRemove` maps to the same `.lost`, never back to `.none`.
+- **The local map is still session-start.** `KeyframeProcessor` keeps writing `camera.transform`
+  and `manifest.origin` stays `session-start`: `keyframes.bin` and `cloud.ply` are a single-phone
+  artifact and rewriting them into a frame that may only appear halfway through a recording would
+  break rebuild. The marker frame is applied at *upload* time — `CaptureSession.alignedPose(…)` /
+  `cloudOrigin` — which is what the party contract actually asks for.
+- **Detection images live in the configuration**, so changing the marker toggle or size re-runs the
+  session (`.resetTracking`) exactly like the 4K toggle, and only outside a recording; restarting
+  mid-recording would split the map's world frame. A missing or undecodable PNG disables the marker
+  origin and surfaces one warning line — capture itself never fails for it.
+- **Marker detection defaults to on.** One reference image with `maximumNumberOfTrackedImages = 1`
+  is cheap, and a party created while the setting was quietly off would upload unaligned poses that
+  nobody notices until the clouds do not line up. The strip's grey `Marker: none` chip makes the
+  state visible, and the toggle is one tap away in the capture menu.

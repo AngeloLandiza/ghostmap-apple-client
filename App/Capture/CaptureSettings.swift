@@ -41,6 +41,14 @@ struct CaptureSettings: Sendable, Equatable {
     var dynamicSensitivity: DynamicSensitivity = .normal
     /// 4K color capture at 30 fps instead of 1920×1440 at 60 fps.
     var highResolutionColor = false
+    /// Watch for the printed Ghostmap marker and use it as the origin of uploaded poses.
+    var markerOrigin = true
+    /// Printed width of the marker's outer white square, in meters. The bundled PNG and PDF are laid
+    /// out for 20 cm; change this only after printing the marker at another scale.
+    var markerWidthMeters: Double = MarkerReference.defaultWidth
+
+    /// The marker width actually handed to ARKit, clamped to the range it can track.
+    var markerPhysicalWidth: Double { MarkerReference.clampWidth(markerWidthMeters) }
 
     /// Depth confidence gate used for the global cloud (0 low, 1 medium, 2 high).
     var minConfidence: UInt8 { highConfidenceOnly ? 2 : 1 }
@@ -137,6 +145,8 @@ struct CaptureSettings: Sendable, Equatable {
         s.showGlobalCloudInMainView = d["showGlobalCloudInMainView"] as? Bool ?? s.showGlobalCloudInMainView
         s.ghostAutoOrbit = d["ghostAutoOrbit"] as? Bool ?? s.ghostAutoOrbit
         s.highResolutionColor = d["highResolutionColor"] as? Bool ?? s.highResolutionColor
+        s.markerOrigin = d["markerOrigin"] as? Bool ?? s.markerOrigin
+        s.markerWidthMeters = d["markerWidthMeters"] as? Double ?? s.markerWidthMeters
         if let q = d["quality"] as? String, let preset = QualityPreset(rawValue: q) { s.quality = preset }
         else if d["highResolution"] as? Bool == true { s.quality = .quality }
         if let ds = d["dynamicSensitivity"] as? String, let v = DynamicSensitivity(rawValue: ds) { s.dynamicSensitivity = v }
@@ -150,6 +160,8 @@ struct CaptureSettings: Sendable, Equatable {
             "showGlobalCloudInMainView": showGlobalCloudInMainView,
             "ghostAutoOrbit": ghostAutoOrbit,
             "highResolutionColor": highResolutionColor,
+            "markerOrigin": markerOrigin,
+            "markerWidthMeters": markerWidthMeters,
             "quality": quality.rawValue,
             "dynamicSensitivity": dynamicSensitivity.rawValue,
         ], forKey: CaptureSettings.key)

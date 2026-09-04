@@ -23,6 +23,10 @@ struct StatusSnapshot: Sendable, Equatable {
     var isRecording = false
     var warning: String?
     var videoFormat = ""
+    /// True while the running AR configuration carries the marker reference image.
+    var markerEnabled = false
+    /// Marker-origin state; drives the "Marker: aligned / lost / none" chip.
+    var markerState: MarkerOrigin.State = .none
 }
 
 /// Observable holder so SwiftUI redraws the strip only when the snapshot changes.

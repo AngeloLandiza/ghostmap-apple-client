@@ -138,7 +138,44 @@ final class CaptureSession {
         ghostRenderer.cameraTransformProvider = { [weak controller] in controller?.latestCameraTransform }
         controller.onKeyframe = { [weak self] snapshot in self?.handleKeyframe(snapshot) }
         controller.canAcceptKeyframe = { [weak self] in (self?.inFlightKeyframes ?? 2) < 2 }
+        controller.markerOriginEnabled = env.settings.markerOrigin
+        controller.markerPhysicalWidth = env.settings.markerPhysicalWidth
+        controller.onOriginChange = { [weak self] _, new in self?.markerOriginChanged(to: new) }
         env.thermal.onChange = { [weak self] old, new in self?.thermalChanged(from: old, to: new) }
+    }
+
+    // MARK: Marker origin
+
+    /// The marker-defined origin of this capture. `.none` until the printed marker is seen.
+    var markerOrigin: MarkerOrigin { controller.origin }
+
+    /// `world_from_origin` once the marker has been seen: the transform an upload divides out to put
+    /// poses in the party's origin frame. Nil while nothing has been detected.
+    var worldFromOrigin: Pose? { controller.worldFromOrigin }
+
+    /// The wire `aligned` flag: true once a marker has defined the origin (also while it is `.lost`,
+    /// because the frame is still the marker's), false while poses are in the ARKit world frame.
+    var isAlignedToMarker: Bool { controller.origin.isAligned }
+
+    /// `origin_from_camera` plus the `aligned` flag for one ARKit camera transform.
+    func alignedPose(worldFromCamera: simd_float4x4) -> AlignedPose {
+        controller.alignedPose(worldFromCamera: worldFromCamera)
+    }
+
+    /// The same for the most recent frame's camera, or nil before the first frame arrives.
+    var currentAlignedPose: AlignedPose? { controller.currentAlignedPose }
+
+    /// The origin descriptor to send with `POST /v1/sessions` and `POST /v1/maps`.
+    var cloudOrigin: CloudOrigin {
+        guard controller.origin.isAligned else { return .sessionStart }
+        return .marker(controller.origin.markerID ?? MarkerReference.name)
+    }
+
+    private func markerOriginChanged(to state: MarkerOrigin.State) {
+        // Push straight into the strip instead of waiting up to 200 ms for the status loop.
+        var s = status.snapshot
+        s.markerState = state
+        if s != status.snapshot { status.snapshot = s }
     }
 
     // MARK: Lifecycle
@@ -146,6 +183,8 @@ final class CaptureSession {
     func startPreview() {
         guard phase == .idle else { return }
         controller.policy.mode = ThermalMonitor.policyMode(for: env.thermal.state)
+        controller.markerOriginEnabled = settings.markerOrigin
+        controller.markerPhysicalWidth = settings.markerPhysicalWidth
         controller.start(highResolutionColor: settings.highResolutionColor)
         phase = .preview
         startStatusLoop()
@@ -210,7 +249,7 @@ final class CaptureSession {
             controller.setIntake(true)
             phase = .recording
             let c = controller.policy.config
-            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(settings.mapConfig.cellSize)m cap=\(settings.mapConfig.maxPoints) quality=\(settings.quality.rawValue) dynamics=\(settings.dynamicSensitivity.rawValue) stride=\(settings.unprojectionStride) carveInterval=\(settings.carveInterval)")
+            log.log(.app, "recording started map=\(id) name=\"\(manifest.name)\" device=\(manifest.deviceModel) ios=\(manifest.iosVersion) app=\(manifest.appVersion) videoFormat=\(controller.videoFormatDescription) thermal=\(ThermalMonitor.label(for: env.thermal.state)) policyMode=\(controller.policy.mode) minConfidence=\(settings.minConfidence) thresholds=\(c.translationThresholdMeters)m/\(c.rotationThresholdDegrees)deg/\(c.maxInterval)s voxel=\(settings.mapConfig.cellSize)m cap=\(settings.mapConfig.maxPoints) quality=\(settings.quality.rawValue) dynamics=\(settings.dynamicSensitivity.rawValue) stride=\(settings.unprojectionStride) carveInterval=\(settings.carveInterval) marker=\(controller.isMarkerDetectionActive ? "\(settings.markerPhysicalWidth)m/\(controller.origin.state.label)" : "off")")
         } catch {
             phase = .failed("Could not start recording: \(error)")
             logger.log(.app, "recording start failed: \(error)", level: .error)
@@ -320,7 +359,7 @@ final class CaptureSession {
             savedMapID = id
             setStep(.manifest, 1)
             phase = .saved
-            logger.log(.app, "finalize done in \(String(format: "%.2f", manifest.finalizeSeconds ?? 0)) s: points=\(manifest.pointCount) keyframes=\(manifest.keyframeCount) candidates=\(controller.keyframeCandidates) dropped=\(droppedKeyframes) logErrors=\(finalLog.errors) size=\(manifest.sizeBytes ?? 0)B duration=\(String(format: "%.1f", manifest.durationSeconds))s callbackP95=\(String(format: "%.2f", controller.callbackP95Ms))ms callbackMax=\(String(format: "%.2f", controller.callbackMaxMs))ms processMax=\(String(format: "%.1f", stats.maxProcessMs))ms grid=\(stats.gridState) memMB=\(rm_physical_footprint_bytes() / 1_048_576) worldMap=\(hasWorldMap)")
+            logger.log(.app, "finalize done in \(String(format: "%.2f", manifest.finalizeSeconds ?? 0)) s: points=\(manifest.pointCount) keyframes=\(manifest.keyframeCount) candidates=\(controller.keyframeCandidates) dropped=\(droppedKeyframes) logErrors=\(finalLog.errors) size=\(manifest.sizeBytes ?? 0)B duration=\(String(format: "%.1f", manifest.durationSeconds))s callbackP95=\(String(format: "%.2f", controller.callbackP95Ms))ms callbackMax=\(String(format: "%.2f", controller.callbackMaxMs))ms processMax=\(String(format: "%.1f", stats.maxProcessMs))ms grid=\(stats.gridState) memMB=\(rm_physical_footprint_bytes() / 1_048_576) worldMap=\(hasWorldMap) marker=\(controller.origin.state.label) markerDetections=\(controller.origin.detections) markerLosses=\(controller.origin.losses)")
         } catch {
             // Flush and fsync the log before giving up: Rebuild reads exactly this file.
             logStatus = (try? await storage.finish()) ?? logStatus
@@ -369,7 +408,14 @@ final class CaptureSession {
     // MARK: Settings & thermal
 
     private func applySettings(previous: CaptureSettings) {
-        if previous.highResolutionColor != settings.highResolutionColor, phase == .preview || phase == .saved {
+        // Detection images live in the configuration, so changing them means re-running the session.
+        // Only outside a recording: a restart resets tracking and would split the map's world frame.
+        let markerChanged = previous.markerOrigin != settings.markerOrigin
+            || previous.markerPhysicalWidth != settings.markerPhysicalWidth
+        controller.markerOriginEnabled = settings.markerOrigin
+        controller.markerPhysicalWidth = settings.markerPhysicalWidth
+        if previous.highResolutionColor != settings.highResolutionColor || markerChanged,
+           phase == .preview || phase == .saved {
             controller.start(highResolutionColor: settings.highResolutionColor)
         }
         mainRenderer.settings = settings
@@ -436,6 +482,8 @@ final class CaptureSession {
         s.gridState = cloudStats.gridState
         s.isRecording = phase == .recording
         s.videoFormat = controller.videoFormatDescription
+        s.markerEnabled = controller.isMarkerDetectionActive
+        s.markerState = controller.origin.state
         s.warning = warning(for: s)
         if s != status.snapshot { status.snapshot = s }
     }
@@ -457,6 +505,8 @@ final class CaptureSession {
         }
         if logStatus.errors > 0 { return "Keyframe log write errors: \(logStatus.errors)" }
         if s.gridState == .coarsened { return "Cloud coarsened to \(Int((cloudStats.cellSize * 100).rounded())) cm" }
+        // Lowest priority: a build-time problem, not something happening to this recording.
+        if let error = controller.markerReferenceError { return "Marker origin off: \(error.description)" }
         return nil
     }
 }

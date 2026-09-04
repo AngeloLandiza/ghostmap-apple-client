@@ -4,7 +4,7 @@
 
 ```
 Packages/MapCore (Swift package, no UIKit/ARKit/Metal; tested on macOS)
-  Geometry/   Pose (SE(3)), Intrinsics (scale, project, unproject), Unprojector
+  Geometry/   Pose (SE(3)), Intrinsics (scale, project, unproject), Unprojector, MarkerOrigin (world_from_origin, AlignedPose)
   Keyframes/  TrackingState, KeyframeRecord, KeyframePolicy (0.15 m / 12° / 0.75 s, thermal modes)
   Cloud/      PackedPoint (16 B, matches the Metal vertex), DynamicVoxelMap, VoxelGrid (static, used by rebuild), Decimation
   Codec/      DepthCodec (u16 mm + LZFSE), PLYWriter / PLYReader, CRC32
@@ -12,7 +12,7 @@ Packages/MapCore (Swift package, no UIKit/ARKit/Metal; tested on macOS)
   Backend/    PKCE + Base64URL, GoogleOAuth (authorization URL, callback, token body), SnakeCase + GhostmapJSON coders, JSONValue, RetryPolicy, BackendURL
 
 App (iOS, Swift 6 language mode)
-  Capture/    ARSessionController, FrameExtractor, KeyframeProcessor (actor), StorageQueue, CaptureSession, ThermalMonitor, SessionLogger, CaptureSettings, MapRebuildService
+  Capture/    ARSessionController, FrameExtractor, KeyframeProcessor (actor), StorageQueue, CaptureSession, ThermalMonitor, SessionLogger, CaptureSettings, MapRebuildService, MarkerReference
   Rendering/  MetalContext, PointCloudPipeline, Shaders.metal + ShaderTypes.h, SharedPointBuffer, TrajectoryBuffer, MetalRenderer, GhostMapRenderer, OrbitCamera (GhostCamera), RenderClock, RenderMath
   Cloud/      GhostmapAPI (actor over URLSession), GhostmapModels (DTOs), GoogleSignIn (ASWebAuthenticationSession + PKCE), AccountStore (@Observable), Keychain (SecItem), CloudSettings
   UI/         MapListView, CaptureView, GhostMapView (overlay, panel, status strip), MapDetailView, SettingsView, MetalViewRepresentable, StatusModel, UnsupportedDeviceView
@@ -60,7 +60,7 @@ CaptureSession status loop (5 Hz) → StatusModel → Ghost Map strip
 
 ## Extension points
 
-- **Marker origin** (swarm plan §6): `MapManifest.origin` / `frame` and the pose written per keyframe in `KeyframeProcessor` (`camera.transform` today). A marker implementation detects an `ARImageAnchor`, sets `origin = {type: "marker", marker_id}` and writes `T_marker⁻¹ · camera.transform`.
+- **Marker origin** (Phase 2 §5, implemented): `ARSessionController` adds the bundled `Marker/ghostmap-marker.png` as an `ARReferenceImage` (`physicalWidth` from `CaptureSettings.markerPhysicalWidth`, `maximumNumberOfTrackedImages = 1`) and feeds every `ARImageAnchor` add/update/remove into `MapCore.MarkerOrigin`. `CaptureSession.alignedPose(worldFromCamera:)` returns `origin_from_camera = world_from_origin⁻¹ · camera.transform` with the wire `aligned` flag, and `cloudOrigin` is the `{type: "marker", marker_id}` descriptor for `POST /v1/sessions` and `POST /v1/maps`. The *local* map is unchanged: `keyframes.bin`, `cloud.ply` and `manifest.origin` stay in the session-start world frame; the marker frame is applied at upload time.
 - **Upload** (swarm plan §5.2, §7): `MapStore` exposes every file URL; keyframe records already carry the plan's live-keyframe fields and `manifest.json` mirrors the map artifact manifest. `AppEnvironment.api` already speaks the whole map flow — `createMap` → `SignedUpload` tickets (`resumable` for `cloud.ply` and `keyframes.bin`) → `finalizeMap` — so the uploader only has to move bytes and report progress.
 - **Parties** (Phase 2 §2): `GhostmapAPI` covers create / by-code / join / leave / end / keyframe upload-urls / register keyframes / realtime token; `AccountStore.deviceIdentity` is the identity the backend binds participants to. The `ghostmap://` URL scheme is registered but not yet handled.
 - **Meshes**: `ARSessionController.start` sets `sceneReconstruction = []`; enabling it and consuming `ARMeshAnchor` is the flagged next step.

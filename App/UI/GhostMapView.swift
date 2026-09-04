@@ -77,6 +77,14 @@ struct StatusStrip: View {
                 Text("·").foregroundStyle(.secondary)
                 Text(snapshot.worldMapping)
             }
+            if snapshot.markerEnabled {
+                HStack(spacing: 4) {
+                    Circle().fill(markerColor).frame(width: 6, height: 6)
+                    Text("Marker: \(snapshot.markerState.label)").foregroundStyle(markerColor)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Marker origin \(snapshot.markerState.label)")
+            }
             Text("\(snapshot.keyframes) kf · \(Format.count(snapshot.points)) pts · \(Format.duration(snapshot.elapsed)) · ~\(Format.bytes(snapshot.estimatedDiskBytes))")
             HStack(spacing: 4) {
                 Circle().fill(thermalColor).frame(width: 6, height: 6)
@@ -108,6 +116,16 @@ struct StatusStrip: View {
         case .normal: return .green
         case .limited: return .orange
         case .notAvailable: return .red
+        }
+    }
+
+    /// Green while the marker is being observed, orange once it is out of view (the origin still
+    /// holds, world-tracking drift is just no longer corrected), grey before it is ever seen.
+    private var markerColor: Color {
+        switch snapshot.markerState {
+        case .tracking: return .green
+        case .lost: return .orange
+        case .none: return .gray
         }
     }
 

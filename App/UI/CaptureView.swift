@@ -109,6 +109,9 @@ struct CaptureView: View {
                 }
                 .disabled(session.isRecording)
                 Toggle("4K color (30 fps)", isOn: Binding(get: { session.settings.highResolutionColor }, set: { session.settings.highResolutionColor = $0 })).disabled(session.isRecording)
+                Toggle("Marker origin (\(Int((session.settings.markerPhysicalWidth * 100).rounded())) cm)",
+                       isOn: Binding(get: { session.settings.markerOrigin }, set: { session.settings.markerOrigin = $0 }))
+                    .disabled(session.isRecording)
                 Button { session.resetGhostView() } label: { Label("Reset Ghost Map view", systemImage: "arrow.counterclockwise") }
             } label: {
                 Image(systemName: "slider.horizontal.3")

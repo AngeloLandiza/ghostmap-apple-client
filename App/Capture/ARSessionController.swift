@@ -108,6 +108,21 @@ final class ARSessionController: NSObject, ARSessionDelegate {
     /// same world frame after an interruption instead of resuming with a new origin.
     private(set) var shouldRelocalize = false
 
+    // MARK: Marker origin
+
+    /// Watch for the printed marker and let it define the origin. Applied on the next `start()`.
+    var markerOriginEnabled = true
+    /// Printed width of the marker in meters, handed to `ARReferenceImage`. Applied on the next `start()`.
+    var markerPhysicalWidth = MarkerReference.defaultWidth
+    /// Called on every marker-origin state transition so the session can log it and refresh the strip.
+    var onOriginChange: ((MarkerOrigin.State, MarkerOrigin.State) -> Void)?
+    /// The marker-defined origin of the running session; `.none` until a marker is seen.
+    private(set) var origin = MarkerOrigin()
+    /// True when the running configuration actually carries the reference image.
+    private(set) var isMarkerDetectionActive = false
+    /// Why the marker image could not be loaded, when it could not.
+    private(set) var markerReferenceError: MarkerReferenceError?
+
     private(set) var latestFrame: FrameTextures?
     private(set) var tracking: TrackingState = .notAvailable
     private(set) var worldMappingStatus: ARFrame.WorldMappingStatus = .notAvailable
@@ -118,6 +133,7 @@ final class ARSessionController: NSObject, ARSessionDelegate {
     private(set) var firstFrameTimestamp: TimeInterval?
     private(set) var initialForward: SIMD3<Float>?
     private(set) var latestCameraTransform: simd_float4x4?
+    private(set) var latestFrameTimestamp: TimeInterval = 0
     private(set) var latestDepthIntrinsics: Intrinsics?
     private(set) var videoFormatDescription = "default"
     private(set) var lastError: String?
@@ -162,12 +178,35 @@ final class ARSessionController: NSObject, ARSessionDelegate {
             config.videoFormat = format
             videoFormatDescription = ARSessionController.describe(format)
         }
+        // `.resetTracking, .removeExistingAnchors` drops the image anchor too, so the origin starts over.
+        origin.reset()
+        configureMarkerDetection(on: config)
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
         isRunning = true
         firstFrameTimestamp = nil
         initialForward = nil
         durations.reset()
-        logger.log(.capture, "AR session started: videoFormat=\(videoFormatDescription) semantics=sceneDepth alignment=gravity")
+        let marker = isMarkerDetectionActive
+            ? "\(MarkerReference.name)@\(String(format: "%.3f", markerPhysicalWidth))m"
+            : (markerOriginEnabled ? "unavailable" : "off")
+        logger.log(.capture, "AR session started: videoFormat=\(videoFormatDescription) semantics=sceneDepth alignment=gravity marker=\(marker)")
+    }
+
+    /// Adds the bundled marker as a detection image. A missing or undecodable image only disables the
+    /// marker origin — capture itself must keep working.
+    private func configureMarkerDetection(on config: ARWorldTrackingConfiguration) {
+        isMarkerDetectionActive = false
+        markerReferenceError = nil
+        guard markerOriginEnabled else { return }
+        do {
+            let image = try MarkerReference.referenceImage(physicalWidth: markerPhysicalWidth)
+            config.detectionImages = [image]
+            config.maximumNumberOfTrackedImages = 1
+            isMarkerDetectionActive = true
+        } catch {
+            markerReferenceError = error
+            logger.log(.capture, "marker origin unavailable: \(error.description)", level: .error)
+        }
     }
 
     func pause() {
@@ -238,6 +277,18 @@ final class ARSessionController: NSObject, ARSessionDelegate {
         MainActor.assumeIsolated { self.updateTracking(state) }
     }
 
+    nonisolated func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+        MainActor.assumeIsolated { self.observeMarker(in: anchors) }
+    }
+
+    nonisolated func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+        MainActor.assumeIsolated { self.observeMarker(in: anchors) }
+    }
+
+    nonisolated func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+        MainActor.assumeIsolated { self.observeMarker(in: anchors, removed: true) }
+    }
+
     nonisolated func session(_ session: ARSession, didFailWithError error: Error) {
         let message = String(describing: error)
         MainActor.assumeIsolated {
@@ -276,6 +327,52 @@ final class ARSessionController: NSObject, ARSessionDelegate {
         relocalizingSince.map { Date().timeIntervalSince($0) }
     }
 
+    // MARK: Marker origin
+
+    /// `world_from_origin` once the marker has been seen, otherwise nil.
+    var worldFromOrigin: Pose? { origin.resolvedWorldFromOrigin }
+
+    /// `origin_from_camera` for an ARKit camera transform, plus the wire `aligned` flag: the marker
+    /// frame once the marker has been seen, otherwise the world pose unchanged with `aligned == false`.
+    func alignedPose(worldFromCamera: simd_float4x4) -> AlignedPose {
+        origin.alignedPose(worldFromCamera: worldFromCamera)
+    }
+
+    /// The most recent camera pose expressed the same way, or nil before the first frame arrives.
+    var currentAlignedPose: AlignedPose? {
+        latestCameraTransform.map { origin.alignedPose(worldFromCamera: $0) }
+    }
+
+    /// Feeds every Ghostmap image anchor in `anchors` to the origin. `removed` marks the origin lost
+    /// (never `.none`): ARKit dropped the anchor, but the frame it defined stays valid.
+    private func observeMarker(in anchors: [ARAnchor], removed: Bool = false) {
+        guard isMarkerDetectionActive else { return }
+        for case let anchor as ARImageAnchor in anchors
+        where anchor.referenceImage.name == MarkerReference.name {
+            let transition = origin.observe(worldFromOrigin: Pose(matrix: anchor.transform),
+                                            isTracked: removed ? false : anchor.isTracked,
+                                            name: anchor.referenceImage.name,
+                                            timestamp: latestFrameTimestamp)
+            if transition.from != transition.to { originChanged(from: transition.from, to: transition.to) }
+        }
+    }
+
+    private func originChanged(from old: MarkerOrigin.State, to new: MarkerOrigin.State) {
+        let t = origin.worldFromOrigin.translation
+        let position = String(format: "(%.3f, %.3f, %.3f)", t.x, t.y, t.z)
+        switch new {
+        case .tracking where origin.detections == 1:
+            logger.log(.capture, "marker origin acquired: id=\(origin.markerID ?? MarkerReference.name) width=\(markerPhysicalWidth) m world_from_origin.t=\(position) after \(frameCount) frames")
+        case .tracking:
+            logger.log(.capture, "marker origin re-acquired (detection #\(origin.detections)) world_from_origin.t=\(position)")
+        case .lost:
+            logger.log(.capture, "marker origin lost (#\(origin.losses)); keeping the last origin, poses stay in the marker frame", level: .default)
+        case .none:
+            logger.log(.capture, "marker origin cleared")
+        }
+        onOriginChange?(old, new)
+    }
+
     // MARK: Frame handling (≤ 2 ms budget)
 
     private func updateTracking(_ state: TrackingState) {
@@ -310,6 +407,13 @@ final class ARSessionController: NSObject, ARSessionDelegate {
         updateTracking(TrackingState(camera.trackingState))
         worldMappingStatus = frame.worldMappingStatus
         latestCameraTransform = camera.transform
+        latestFrameTimestamp = frame.timestamp
+        if isMarkerDetectionActive {
+            // ARKit does not always send a final "not tracked" anchor update, so a tracked origin that
+            // stops being refreshed decays here instead of staying green forever.
+            let transition = origin.tick(timestamp: frame.timestamp)
+            if transition.from != transition.to { originChanged(from: transition.from, to: transition.to) }
+        }
         if firstFrameTimestamp == nil { firstFrameTimestamp = frame.timestamp }
         if initialForward == nil, tracking.isNormal {
             let c2 = camera.transform.columns.2
