@@ -322,6 +322,9 @@ struct CloudSession: Codable, Sendable, Equatable, Identifiable {
     let bytes: Int?
     let createdAt: Date?
     let endedAt: Date?
+    /// Present on `GET /v1/sessions` rows only: distinct active identities and the owner's display name.
+    let participantCount: Int?
+    let ownerName: String?
 }
 
 struct SessionParticipant: Codable, Sendable, Equatable, Identifiable {
