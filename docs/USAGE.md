@@ -104,6 +104,89 @@ The redirect URI Google needs is that reversed id followed by `:/oauthredirect`.
 list the same client id in its `GOOGLE_CLIENT_IDS` environment variable. Neither value is a secret —
 iOS OAuth clients have no client secret.
 
+## Parties (mapping a room together)
+
+A **party** is a session several phones and browsers share: everyone streams keyframes into one
+coordinate frame, and every phone draws the others' points live. Open it from the **Party** button —
+top left of the map list, and top left of the capture screen.
+
+Parties need a Ghostmap account (Settings → *Sign in with Google*). Signed in **as this phone** you
+join as a *mapper* and stream keyframes; signed in as a viewer you can watch but not contribute.
+Without a network the party screen still opens and explains what is missing; capture is never
+blocked by any of this.
+
+### Before you start: the marker
+
+Print `docs/ghostmap-marker.pdf` at 100 %, tape it flat where everyone can point at it, and leave
+**Use a printed marker** on in Settings. The marker is what makes the phones agree: each one uploads
+poses as `world_from_marker⁻¹ · camera`, so two clouds land on top of each other. Without it the
+party's origin is wherever the creator's phone started, and the other phones' points will be in the
+wrong place — the create screen says so, and the Ghost Map strip warns while peers are streaming and
+this phone has not seen the marker yet.
+
+### Starting one
+
+1. **Party → Start a party.** Name it, pick how many phones may join (1–8, default 4).
+2. The screen switches to the party view: the **code** in large type, a **QR code** and a share
+   link, the participant list, and this phone's counters.
+3. Hand the code to the others, or let them scan the QR code.
+
+### Joining one
+
+- **Scan the QR code** or **open the link** — `ghostmap://join/ABCD2345` and the dashboard's
+  `…/join/ABCD2345` both open this app straight onto the party screen with the code filled in.
+- Or **Party → Join**, type the 8 characters and tap **Look up code**. The party's name, how full it
+  is and whether you can join appear before you commit; tap **Join party** to go in.
+
+Codes are 8 characters from `A–Z` and `2–7`. Case, spaces and dashes do not matter, and because
+neither `0` nor `1` is part of the alphabet they are read as `O` and `I`.
+
+A full party answers *This party is full*, an ended one *This party has ended*. **Rejoining is
+always allowed** and keeps your colour and your place — the party screen offers **Rejoin** for the
+last party this phone was in, even after the app was killed.
+
+### While recording
+
+Start recording as usual. Every keyframe is then also:
+
+1. given a signed upload URL (batched, up to five keyframes at a time),
+2. uploaded to storage as the same LZFSE depth and confidence payloads that go into `keyframes.bin`,
+3. registered with the backend, which fans it out to everyone on the party channel with up to
+   **2 000 of that keyframe's confirmed points** inline.
+
+This phone also publishes its camera pose at up to 10 Hz, so the others see your frustum move.
+
+The queue holds ten keyframes. If the network cannot keep up, the **oldest** are dropped and counted
+— streaming never slows the capture down, and the local map is exactly what it would have been solo.
+
+### What you see
+
+- **Main view and Ghost Map**: peers' points, small and translucent, each tinted with that peer's
+  party colour, plus a small frustum per peer showing where their camera is. Peers' points are
+  placed through this phone's marker origin, so they only line up once *Marker: aligned* appears.
+- **Ghost Map strip**, a party line: the code, the head count, `↑` keyframes streamed (and `✕`
+  dropped), and how many peers and peer points are being drawn. The dot is green while the live
+  channel is delivering and this phone is streaming, cyan when joined but idle, amber when the live
+  channel is down.
+- **Party screen**: every participant with their colour, whether they are a mapper or a viewer, how
+  many points of theirs have arrived, and a green dot while they are actively streaming.
+
+### Leaving and ending
+
+**Leave party** takes this phone out; everyone else carries on and you can rejoin.
+**End party for everyone** (owner or leader phone only) closes it: nobody can join or stream any
+more. Maps already recorded stay on each phone regardless — a party never owns your local maps.
+
+### When it does not work
+
+| What you see | What it means |
+|---|---|
+| *Sign in to start or join a party* | No account yet: Settings → *Sign in with Google*. |
+| *This phone is in the party as a viewer* | You signed in without *Sign in as this phone*, so there is no device token. Sign out, turn the toggle on, sign in again. |
+| Live updates: an error instead of *live* | The realtime channel is down (no network, or the backend has no Ably configured). Keyframes still upload; you just will not see peers until it recovers, which it retries on its own with backoff. |
+| *Point at the marker* warning | Peers are streaming but this phone has not seen the marker, so their points cannot be placed yet. |
+| `✕` counts climbing in the strip | Uploads are slower than capture. Move less, or accept the loss — the local map is unaffected. |
+
 ## Map library
 
 Each map shows a top-down thumbnail, name (rename via swipe or long press), point and keyframe counts, duration, size and status. Swipe left to delete.

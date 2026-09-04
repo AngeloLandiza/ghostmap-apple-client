@@ -8,6 +8,7 @@ struct CaptureView: View {
     @State private var session: CaptureSession?
     @State private var initError: String?
     @State private var cameraDenied = false
+    @State private var showParty = false
 
     var body: some View {
         ZStack {
@@ -17,6 +18,7 @@ struct CaptureView: View {
                     .ignoresSafeArea()
                 // The Ghost Map sits below the controls in z-order so Start/Stop stays reachable even when expanded.
                 GhostMapOverlay(session: session)
+                if !session.ghostExpanded { partyButton(session) }
                 VStack {
                     Spacer()
                     controls(session)
@@ -40,6 +42,35 @@ struct CaptureView: View {
         .persistentSystemOverlays(.hidden)
         .task { await start() }
         .onDisappear { session?.teardown() }
+        .sheet(isPresented: $showParty) {
+            PartyView(env: env)
+        }
+        .onChange(of: env.pendingJoinCode) { _, code in
+            if code != nil { showParty = true }
+        }
+    }
+
+    /// Top-left pill: opens the party screen, and shows the code and head count while in one.
+    @ViewBuilder
+    private func partyButton(_ session: CaptureSession) -> some View {
+        VStack {
+            HStack {
+                Button { showParty = true } label: {
+                    PartyBadge(party: session.party)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(.white.opacity(session.isStreamingToParty ? 0.5 : 0.18), lineWidth: 0.5))
+                }
+                .foregroundStyle(.white)
+                .disabled(session.isFinalizing)
+                .accessibilityLabel(session.party.isActive ? "Party \(session.party.inviteCode ?? "")" : "Parties")
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 16)
+            .padding(.top, 8)
+            Spacer(minLength: 0)
+        }
     }
 
     private var closeButton: some View {

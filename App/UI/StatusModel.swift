@@ -27,6 +27,28 @@ struct StatusSnapshot: Sendable, Equatable {
     var markerEnabled = false
     /// Marker-origin state; drives the "Marker: aligned / lost / none" chip.
     var markerState: MarkerOrigin.State = .none
+
+    // MARK: Party
+
+    /// The invite code of the party this phone is in, or nil when it is not in one.
+    var partyCode: String?
+    /// Active participants, including this phone.
+    var partyParticipants = 0
+    /// Peers whose clouds are being drawn.
+    var partyPeers = 0
+    /// Points received from peers.
+    var partyPeerPoints = 0
+    /// Keyframes this phone has registered with the party.
+    var partyStreamed = 0
+    /// Keyframes lost to a full queue or a failed round.
+    var partyDropped = 0
+    /// True while this recording is feeding the party.
+    var partyStreaming = false
+    /// True while the Ably channel is delivering.
+    var partyLive = false
+
+    /// Whether the strip should show a party line at all.
+    var isInParty: Bool { partyCode != nil }
 }
 
 /// Observable holder so SwiftUI redraws the strip only when the snapshot changes.

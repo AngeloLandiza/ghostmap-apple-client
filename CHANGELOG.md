@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (feature/phase2-parties)
+
+- **Parties**: create, join by code or `ghostmap://join/<code>` link, rejoin, leave and end, from a
+  Party button on the map list and the capture screen. Party screen shows the code, a CoreImage QR
+  code of the share link, the participant list with colours and live dots, and this phone's counters.
+- **Keyframe streaming**: while recording in a party each keyframe gets batched signed upload URLs,
+  its LZFSE depth and confidence payloads go straight to storage, and the row is registered with up
+  to 2 000 confirmed inline points, poses in the marker origin frame when aligned. Bounded queue of
+  ten, oldest dropped and counted.
+- **Live peers**: an SSE subscription to the Ably channel (streaming `URLSession`, no SDK) feeds a
+  `SharedPointBuffer` per peer; both renderers draw peers' points tinted with their party colour and
+  a frustum per peer, and the Ghost Map strip gains a party line.
+- **Pose publishing** over Ably REST at up to 10 Hz, sent only when the camera actually moved.
+- MapCore gains `PartyCode`, `PartyColor`, `InlinePoints`, `AblyWire` and `ServerSentEventParser`,
+  all unit tested (463 MapCore tests, up from 444).
+
 ## 0.1.0 — 2026-09-03 (release/ios-client-arkit-vslam)
 
 First release of Ghostmap (codename RoomMapper).

@@ -15,6 +15,11 @@ final class AppEnvironment {
     let api: GhostmapAPI
     /// The signed-in account and this phone's identity.
     let account: AccountStore
+    /// The collaborative session this phone is in, if any, plus the peers' live clouds.
+    let party: PartySession
+    /// An invite code handed to the app by a `ghostmap://join/<code>` link, waiting for the party
+    /// screen to pick it up.
+    var pendingJoinCode: String?
     private(set) var interruptedMapIDs: [MapID] = []
 
     var settings: CaptureSettings {
@@ -41,7 +46,9 @@ final class AppEnvironment {
         cloud = cloudSettings
         // A stored URL that no longer parses falls back to production rather than failing launch.
         api = GhostmapAPI(baseURL: try CloudSettings.resolvedURL(cloudSettings.backendURLString))
-        account = AccountStore(api: api)
+        let account = AccountStore(api: api)
+        self.account = account
+        party = PartySession(api: api, account: account, device: context.device)
         let logger = SessionLogger.osLogger(.app)
         do {
             interruptedMapIDs = try store.markInterruptedRecordings()
@@ -52,6 +59,16 @@ final class AppEnvironment {
             logger.error("markInterruptedRecordings failed: \(String(describing: error), privacy: .public)")
         }
         logger.info("maps root: \(self.store.rootURL.path, privacy: .public)")
+    }
+
+    /// Accepts a `ghostmap://join/<code>` deep link (or a dashboard share link). Returns false when
+    /// the URL is not a join link, so the caller can ignore it.
+    @discardableResult
+    func handle(url: URL) -> Bool {
+        guard let code = PartyCode.code(from: url) else { return false }
+        pendingJoinCode = code
+        SessionLogger.osLogger(.app).notice("join link received for party \(code, privacy: .public)")
+        return true
     }
 
     /// Validates and stores a new backend URL, and points the API client at it.

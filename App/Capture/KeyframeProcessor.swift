@@ -18,6 +18,22 @@ struct CloudStats: Sendable, Equatable {
     var coarsened = false
 }
 
+/// What one keyframe produced, for the caller that needs more than the running totals.
+///
+/// `inlinePoints` and `depthMillimeters` are only filled while a party stream is running
+/// (``KeyframeProcessor/setInlinePointTarget(_:)`` with a positive target); solo captures pay
+/// nothing for them.
+struct KeyframeOutcome: Sendable {
+    var stats: CloudStats
+    /// The sequence number this keyframe was logged under, so the party stream and `keyframes.bin`
+    /// agree on which frame is which.
+    var seq: UInt32 = 0
+    /// Confirmed points this keyframe contributed, already decimated to the inline cap.
+    var inlinePoints: [PackedPoint] = []
+    /// The quantized depth map, handed over so the party stream does not quantize a second time.
+    var depthMillimeters: [UInt16] = []
+}
+
 /// Turns keyframe snapshots into global-cloud points: quantize depth, unproject with color, voxel
 /// dedupe, append to the shared GPU buffer and trajectory, and persist the record.
 actor KeyframeProcessor {
@@ -29,6 +45,8 @@ actor KeyframeProcessor {
     private var options: Unprojector.Options
     private var seq: UInt32 = 0
     private var loggedFull = false
+    /// How many confirmed points a keyframe should hand back for the party stream; 0 = not in a party.
+    private var inlinePointTarget = 0
     private(set) var stats = CloudStats()
 
     init(pointBuffer: SharedPointBuffer,
@@ -52,6 +70,11 @@ actor KeyframeProcessor {
 
     func setMinConfidence(_ c: UInt8) {
         options.minConfidence = c
+    }
+
+    /// Turns the party stream's per-keyframe sample on (a positive cap) or off (0).
+    func setInlinePointTarget(_ target: Int) {
+        inlinePointTarget = max(0, target)
     }
 
     /// Applies an integration result to the GPU mirror.
@@ -86,16 +109,16 @@ actor KeyframeProcessor {
     }
 
     /// Depth-only frame: carve stale voxels, add nothing, persist nothing.
-    func carve(_ snapshot: KeyframeSnapshot) -> CloudStats {
+    func carve(_ snapshot: KeyframeSnapshot) -> KeyframeOutcome {
         let cellBefore = map.cellSize
         let r = map.integrate(samples: [], depthMillimeters: DepthCodec.quantize(depthMeters: snapshot.depthMeters),
                               confidence: snapshot.confidence, intrinsics: snapshot.intrinsics,
                               pose: Pose(matrix: snapshot.cameraTransform))
         apply(r, cellBefore: cellBefore)
-        return stats
+        return KeyframeOutcome(stats: stats)
     }
 
-    func process(_ snapshot: KeyframeSnapshot) -> CloudStats {
+    func process(_ snapshot: KeyframeSnapshot) -> KeyframeOutcome {
         if snapshot.isCarveOnly { return carve(snapshot) }
         let start = ContinuousClock.now
 
@@ -141,7 +164,12 @@ actor KeyframeProcessor {
         stats.lastProcessMs = ms
         stats.maxProcessMs = max(stats.maxProcessMs, ms)
         stats.pointsLastKeyframe = accepted.count
-        return stats
+        var outcome = KeyframeOutcome(stats: stats, seq: record.seq)
+        if inlinePointTarget > 0 {
+            outcome.inlinePoints = InlinePoints.select(appended: r.appended, updates: r.updates, maxPoints: inlinePointTarget)
+            outcome.depthMillimeters = mm
+        }
+        return outcome
     }
 
     /// Full-range BT.601 YCbCr → packed RGBA.

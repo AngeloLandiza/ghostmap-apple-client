@@ -6,6 +6,7 @@ struct MapListView: View {
     @State private var maps: [MapSummary] = []
     @State private var showCapture = false
     @State private var showSettings = false
+    @State private var showParty = false
     @State private var renaming: MapSummary?
     @State private var newName = ""
     @State private var rebuilding: Set<MapID> = []
@@ -48,6 +49,10 @@ struct MapListView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
                 }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showParty = true } label: { PartyBadge(party: env.party) }
+                        .accessibilityLabel(env.party.isActive ? "Party \(env.party.inviteCode ?? "")" : "Parties")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { showCapture = true } label: { Label("Scan", systemImage: "camera.viewfinder") }
                 }
@@ -57,6 +62,13 @@ struct MapListView: View {
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView(env: env)
+            }
+            .sheet(isPresented: $showParty) {
+                PartyView(env: env)
+            }
+            // A ghostmap://join/<code> link opens the party screen with the code already filled in.
+            .onChange(of: env.pendingJoinCode) { _, code in
+                if code != nil { showParty = true }
             }
             .alert("Rename map", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Name", text: $newName)
@@ -68,7 +80,10 @@ struct MapListView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
-            .task { reload() }
+            .task {
+                reload()
+                if env.pendingJoinCode != nil { showParty = true }
+            }
             .refreshable { reload() }
         }
     }

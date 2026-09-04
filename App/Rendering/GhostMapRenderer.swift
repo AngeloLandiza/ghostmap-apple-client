@@ -9,9 +9,16 @@ import simd
 /// skips frames when the main renderer is behind. Also renders thumbnails offscreen.
 @MainActor
 final class GhostMapRenderer: NSObject, MTKViewDelegate {
-    static let uniformSlotBytes = 1024
+    static let uniformSlotBytes = 4096
     static let trajectoryUniformOffset = 256
     static let frustumUniformOffset = 512
+    /// One 256-byte cloud-uniform block per party peer, then one 128-byte line block each.
+    static let peerCloudUniformOffset = 1024
+    static let peerCloudUniformStride = 256
+    static let peerLineUniformOffset = 3072
+    static let peerLineUniformStride = 128
+    /// Vertices in one frustum wireframe (4 apex spokes + 4 far-plane edges, as line pairs).
+    static let frustumVertexCount = 16
 
     private let context: MetalContext
     private let pipeline: PointCloudPipeline
@@ -32,6 +39,16 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
     var frustumHalfExtents = SIMD2<Float>(0.18, 0.135)
     var skipWhenMainIsBehind = true
     var clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+
+    // MARK: Party peers
+
+    /// The other phones in the party. Their clouds and frustums are drawn in their party colours.
+    var peers: PeerCloudStore?
+    /// `world_from_origin`, which lifts peers' origin-frame data into this phone's world frame.
+    var peerOriginToWorld = matrix_identity_float4x4
+    var peerPointSizePx: Float = 2
+    var peerAlpha: Float = 0.7
+    var maxPeerPoints = 120_000
     private(set) var fps: Double = 0
     private(set) var skippedFrames = 0
 
@@ -39,6 +56,7 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
     private let uniformRing: [MTLBuffer]
     private var ringIndex = 0
     private let frustumBuffer: MTLBuffer
+    private let peerFrustumBuffer: MTLBuffer
     private var lastDraw: ContinuousClock.Instant?
 
     init(context: MetalContext, pipeline: PointCloudPipeline, pointBuffer: SharedPointBuffer,
@@ -57,12 +75,18 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
             ring.append(b)
         }
         uniformRing = ring
-        let frustumBytes = 16 * MemoryLayout<RMLineVertex>.stride
+        let frustumBytes = GhostMapRenderer.frustumVertexCount * MemoryLayout<RMLineVertex>.stride
         guard let fb = context.device.makeBuffer(length: frustumBytes, options: .storageModeShared) else {
             throw RenderError.bufferAllocationFailed(bytes: frustumBytes)
         }
         fb.label = "Frustum"
         frustumBuffer = fb
+        let peerBytes = frustumBytes * PeerCloudStore.maxPeers
+        guard let pb = context.device.makeBuffer(length: peerBytes, options: .storageModeShared) else {
+            throw RenderError.bufferAllocationFailed(bytes: peerBytes)
+        }
+        pb.label = "PeerFrustums"
+        peerFrustumBuffer = pb
         super.init()
     }
 
@@ -119,14 +143,15 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
         let aspect = Float(view.drawableSize.width / max(view.drawableSize.height, 1))
         encodeScene(enc, viewProjection: camera.viewProjection(aspect: aspect), slot: slot,
                     pointSize: pointSizePx, alpha: pointAlpha, maxPoints: maxPoints, includeCamera: true,
-                    perspective: camera.mode == .orbit)
+                    perspective: camera.mode == .orbit, includePeers: true)
         enc.endEncoding()
         cb.present(drawable)
         cb.commit()
     }
 
     private func encodeScene(_ enc: MTLRenderCommandEncoder, viewProjection vp: simd_float4x4, slot: MTLBuffer,
-                             pointSize: Float, alpha: Float, maxPoints: Int, includeCamera: Bool, perspective: Bool) {
+                             pointSize: Float, alpha: Float, maxPoints: Int, includeCamera: Bool, perspective: Bool,
+                             includePeers: Bool = false) {
         let uniformsIndex = Int(RMBufferIndexUniforms.rawValue)
         let snap = pointBuffer.snapshot()
         if snap.count > 0 {
@@ -168,12 +193,66 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
             enc.setDepthStencilState(pipeline.depthDisabled)
             enc.setVertexBuffer(frustumBuffer, offset: 0, index: Int(RMBufferIndexLines.rawValue))
             enc.setVertexBuffer(slot, offset: GhostMapRenderer.frustumUniformOffset, index: uniformsIndex)
-            enc.drawPrimitives(type: .line, vertexStart: 0, vertexCount: 16)
+            enc.drawPrimitives(type: .line, vertexStart: 0, vertexCount: GhostMapRenderer.frustumVertexCount)
             enc.popDebugGroup()
+        }
+
+        if includePeers, let peers, !peers.peers.isEmpty {
+            encodePeers(enc, viewProjection: vp, slot: slot, peers: peers, perspective: perspective)
         }
     }
 
+    /// Peer clouds and, for every peer that has published a pose, a small frustum in their colour.
+    /// Everything is drawn through `world_from_origin` because peers speak the party's origin frame.
+    private func encodePeers(_ enc: MTLRenderCommandEncoder, viewProjection vp: simd_float4x4, slot: MTLBuffer,
+                             peers: PeerCloudStore, perspective: Bool) {
+        let uniformsIndex = Int(RMBufferIndexUniforms.rawValue)
+        let originToClip = vp * peerOriginToWorld
+        let visible = Array(peers.peers.prefix(PeerCloudStore.maxPeers))
+
+        enc.pushDebugGroup("PeerClouds")
+        enc.setRenderPipelineState(pipeline.cloudPoints)
+        enc.setDepthStencilState(pipeline.depthWrite)
+        for (slotIndex, peer) in visible.enumerated() {
+            let snap = peer.buffer.snapshot()
+            guard snap.count > 0 else { continue }
+            let stride = Decimation.stride(count: snap.count, target: maxPeerPoints)
+            let uniforms = RMCloudUniforms(viewProjection: originToClip, pointSize: peerPointSizePx, alpha: peerAlpha,
+                                           stride: UInt32(stride), count: UInt32(snap.count),
+                                           perspective: perspective ? 1 : 0)
+            let offset = GhostMapRenderer.peerCloudUniformOffset + slotIndex * GhostMapRenderer.peerCloudUniformStride
+            slot.contents().advanced(by: offset).storeBytes(of: uniforms, as: RMCloudUniforms.self)
+            enc.setVertexBuffer(snap.buffer, offset: 0, index: Int(RMBufferIndexPoints.rawValue))
+            enc.setVertexBuffer(slot, offset: offset, index: uniformsIndex)
+            enc.drawPrimitives(type: .point, vertexStart: 0, vertexCount: Decimation.decimatedCount(count: snap.count, stride: stride))
+        }
+        enc.popDebugGroup()
+
+        enc.pushDebugGroup("PeerFrustums")
+        enc.setRenderPipelineState(pipeline.lines)
+        enc.setDepthStencilState(pipeline.depthDisabled)
+        let vertexStride = MemoryLayout<RMLineVertex>.stride
+        for (slotIndex, peer) in visible.enumerated() {
+            guard let pose = peer.latestPose else { continue }
+            let vertexOffset = slotIndex * GhostMapRenderer.frustumVertexCount * vertexStride
+            writeFrustum(transform: pose, into: peerFrustumBuffer, byteOffset: vertexOffset)
+            let (r, g, b) = peer.color.components
+            let uniforms = RMLineUniforms(viewProjection: originToClip, color: SIMD4<Float>(r, g, b, peer.isStale ? 0.35 : 0.95))
+            let offset = GhostMapRenderer.peerLineUniformOffset + slotIndex * GhostMapRenderer.peerLineUniformStride
+            slot.contents().advanced(by: offset).storeBytes(of: uniforms, as: RMLineUniforms.self)
+            enc.setVertexBuffer(peerFrustumBuffer, offset: vertexOffset, index: Int(RMBufferIndexLines.rawValue))
+            enc.setVertexBuffer(slot, offset: offset, index: uniformsIndex)
+            enc.drawPrimitives(type: .line, vertexStart: 0, vertexCount: GhostMapRenderer.frustumVertexCount)
+        }
+        enc.popDebugGroup()
+    }
+
     private func fillFrustum(transform t: simd_float4x4) {
+        writeFrustum(transform: t, into: frustumBuffer, byteOffset: 0)
+    }
+
+    /// Writes one frustum wireframe (16 vertices, 8 line segments) at `byteOffset` in `buffer`.
+    private func writeFrustum(transform t: simd_float4x4, into buffer: MTLBuffer, byteOffset: Int) {
         let hx = frustumHalfExtents.x
         let hy = frustumHalfExtents.y
         let d = frustumDepth
@@ -188,8 +267,8 @@ final class GhostMapRenderer: NSObject, MTKViewDelegate {
         let c3 = world(SIMD3<Float>(-hx, hy, -d))
         let lines: [RMLineVertex] = [apex, c0, apex, c1, apex, c2, apex, c3, c0, c1, c1, c2, c2, c3, c3, c0]
         lines.withUnsafeBytes { src in
-            if let base = src.baseAddress {
-                frustumBuffer.contents().copyMemory(from: base, byteCount: src.count)
+            if let base = src.baseAddress, byteOffset + src.count <= buffer.length {
+                buffer.contents().advanced(by: byteOffset).copyMemory(from: base, byteCount: src.count)
             }
         }
     }

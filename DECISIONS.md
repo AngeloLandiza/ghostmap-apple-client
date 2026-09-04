@@ -179,3 +179,84 @@ Every non-obvious choice in RoomMapper and why. Newest additions at the bottom o
   is cheap, and a party created while the setting was quietly off would upload unaligned poses that
   nobody notices until the clouds do not line up. The strip's grey `Marker: none` chip makes the
   state visible, and the toggle is one tap away in the capture menu.
+
+## Parties (Phase 2 §5, added 2026-09-04)
+
+- **Ably without the Ably SDK.** The no-third-party rule means no `ably-cocoa`, so `AblyRealtime`
+  speaks the two pieces of Ably's protocol the app needs: subscribing over the **SSE adapter**
+  (`GET https://realtime.ably.io/sse?channels=…&v=1.2&accessToken=…` read by a streaming
+  `URLSession` data task via `URLSession.bytes(for:)`) and publishing over **REST**
+  (`POST https://rest.ably.io/channels/<channel>/messages`). Both are documented, versioned Ably
+  HTTP endpoints, so this does not depend on SDK internals.
+- **The token needs one extra hop.** `POST /v1/realtime/token` returns a signed Ably *TokenRequest*
+  (`keyName`, `nonce`, `mac`, …), which is what an SDK's `authCallback` would consume — it is not a
+  token. `AblyRealtime` does what the SDK would: `POST https://rest.ably.io/keys/<keyName>/requestToken`
+  with that object, and uses the `token` it gets back. `AblyWire.tokenSource` also accepts a
+  `TokenDetails` object or a bare token string, so a backend that starts returning either keeps
+  working. REST auth is `Authorization: Bearer <base64 of the token>`, per Ably's token auth.
+- **Presence is read-only from here.** Ably can only be *entered* into presence over a realtime
+  (WebSocket) connection; the REST API exposes presence for reading (`GET /channels/:ch/presence`),
+  which `AblyRealtime.presenceMembers()` uses, but there is no REST "enter". So this phone does not
+  appear in Ably presence. It announces itself the two ways it can: the backend publishes a
+  `participant joined` message on join, and the phone publishes `pose` messages carrying its
+  `device_id`. The party screen's live dots come from those poses (a peer is "streaming" while its
+  last message is under 15 s old), not from Ably presence. Entering presence properly needs either a
+  WebSocket implementation or the SDK; neither is worth it for a dot.
+- **Reconnect, do not fail.** The SSE loop reconnects with doubling backoff capped at 30 s, resumes
+  from the last event id (`&lastEvent=`), and drops the cached token on 401/403 so the next attempt
+  fetches a fresh one. Losing the channel is reported as `degraded` in the UI, never as a failure:
+  keyframes keep uploading over the API, only the *live* view of peers is affected. The only
+  non-retryable case is `notConfigured` (the deployment has no Ably), which stops the loop.
+- **Poses are published on movement, not on a metronome.** The publish loop ticks every 100 ms —
+  the contract's 10 Hz ceiling — but only sends when the camera moved more than 1 cm or turned more
+  than 1°, plus a 1 s heartbeat. A phone sitting on a table therefore costs 1 message/s instead of
+  10, which matters because Ably's free tier is counted in messages.
+- **`points_inline` is "what this keyframe confirmed", not "what it saw".** `DynamicVoxelMap`
+  parks unconfirmed and dead voxels out of view, and a voxel needs two observations before it is
+  shown, so `Integration.appended` alone would be almost entirely parked entries.
+  `InlinePoints.select` takes the renderable points from **both** `appended` and `updates` — the
+  latter is where a keyframe's freshly confirmed and re-fused voxels appear — then decimates to
+  2 000 with a uniform stride. Positions are re-expressed in the party origin frame with the same
+  transform as the pose, so a viewer can draw them without touching the pose.
+- **A bounded queue that drops the oldest.** `KeyframeStreamer` holds ten keyframes; an eleventh
+  evicts the *oldest*, because a live viewer wants the newest data and a stalled uplink otherwise
+  grows without limit. Drops are counted and shown in the Ghost Map strip. Nothing in the capture
+  path ever awaits the network: `CaptureSession` hands the keyframe to the actor and returns.
+- **A failed upload still registers the keyframe.** If the signed-URL call or a PUT fails, the round
+  still `POST`s the keyframe rows so peers get the inline points and the pose; only the depth blob is
+  missing (counted as `partial`). Depth is for the offline merge, inline points are for the live
+  view, and losing the first should not cost the second.
+- **The party frame is resolved on the main actor, at capture time.** `CaptureSession.handleKeyframe`
+  computes `AlignedPose` from the marker origin *before* dispatching to the processor: by the time
+  the actor finishes, the origin may have moved (or been lost). The processor hands back the
+  quantized depth it already produced, so the streamer never quantizes a second time.
+- **Peers are drawn through `world_from_origin`.** Peers publish in the party's origin (marker)
+  frame; this phone renders in its ARKit world frame. Rather than transform every incoming point,
+  the renderers multiply the view-projection by `world_from_origin` for peer draws — one matrix
+  multiply per frame instead of a pass over the cloud. Before this phone has seen the marker the
+  transform is identity and the strip says so, because peers genuinely cannot be placed yet.
+- **One `SharedPointBuffer` per peer, with a CPU ring behind it.** Each peer gets its own 150 000-point
+  buffer, which keeps the draw call per peer trivial and lets a peer be removed without touching the
+  others. A CPU copy in insertion order backs it so the *oldest* points are dropped when it fills;
+  the wrap does a `replaceAll` roughly once every 25 s per peer, far enough apart that the buffer's
+  double-buffer swap is never re-entered inside a frame (the invariant that type documents).
+- **Peers' points are tinted, not recoloured.** `PartyColor.tinted` blends 55 % of the party colour
+  into the captured colour: enough that whose points are whose is obvious at a glance, little enough
+  that the room is still recognisable. The eight colours are the backend's palette, and when a
+  participant row carries no colour the join index picks one, so peers stay distinguishable offline.
+- **The invite code folds `0` → `O` and `1` → `I`.** Neither digit exists in RFC 4648 base32, so the
+  substitution can never turn one valid code into a different valid code — it can only rescue a code
+  someone typed off a screen. Everything else matches the backend's `normalizeInviteCode`.
+- **`ghostmap://join/<code>` is handled by the app, not by a route table.** `PartyCode.code(from:)`
+  accepts the app scheme and any `…/join/<code>` share link, and only when the segment before the
+  code is `join`, so an unrelated deep link cannot look like an invite. A link that arrives before
+  `AppEnvironment` finishes starting is held in `RootView` and replayed.
+- **The party outlives the capture screen.** `PartySession` lives on `AppEnvironment`, so leaving the
+  capture screen does not leave the party, and the map list shows the code in its toolbar. The
+  membership (session id + code) is written to `UserDefaults` so a relaunch can offer **Rejoin** —
+  the one operation the backend guarantees is always allowed.
+- **Wire logic lives in MapCore.** `PartyCode`, `PartyColor`, `InlinePoints`, `AblyWire` and the SSE
+  parser (`ServerSentEventParser`) are pure and unit tested (the app has no XCTest target). The SSE
+  parser implements the WHATWG field rules — sticky `id`, one optional space after the colon,
+  multi-line `data`, `:` comments as Ably's heartbeat — so reconnect resumption and heartbeat
+  handling are testable without a network.

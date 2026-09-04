@@ -7,8 +7,11 @@ import simd
 /// the accumulated global cloud (strided to ≤ 1 M points).
 @MainActor
 final class MetalRenderer: NSObject, MTKViewDelegate {
-    static let uniformSlotBytes = 1024
+    static let uniformSlotBytes = 4096
     static let cloudUniformOffset = 512
+    /// Party peers get one 256-byte uniform block each, after the local blocks.
+    static let peerUniformOffset = 1024
+    static let peerUniformStride = 256
 
     private let context: MetalContext
     private let pipeline: PointCloudPipeline
@@ -20,6 +23,18 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
     var cloudPointSizePx: Float = 5
     var cloudAlpha: Float = 0.35
     var maxCloudPoints = 1_000_000
+
+    // MARK: Party peers
+
+    /// The other phones in the party, drawn small and translucent in their own colours.
+    var peers: PeerCloudStore?
+    /// `world_from_origin`: peers stream poses and points in the party's origin frame, so their
+    /// clouds are lifted into this phone's ARKit world frame before drawing. Identity while this
+    /// phone has not seen the marker, which is also when the strip warns that peers may not line up.
+    var peerOriginToWorld = matrix_identity_float4x4
+    var peerPointSizePx: Float = 3
+    var peerAlpha: Float = 0.7
+    var maxPeerPoints = 150_000
 
     private let inflight = DispatchSemaphore(value: 3)
     private let uniformRing: [MTLBuffer]
@@ -145,6 +160,10 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
                     enc.popDebugGroup()
                 }
             }
+
+            if let peers, !peers.peers.isEmpty {
+                drawPeers(enc, viewProjection: frame.viewProjection, slot: slot, peers: peers)
+            }
         }
 
         enc.endEncoding()
@@ -154,5 +173,33 @@ final class MetalRenderer: NSObject, MTKViewDelegate {
 
         let d = ContinuousClock.now - start
         clock.recordCPUFrame(ms: Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15)
+    }
+
+    /// One draw per peer: their points are already tinted with the party colour on the way in, so
+    /// only the size and the alpha separate them from this phone's own cloud.
+    private func drawPeers(_ enc: MTLRenderCommandEncoder, viewProjection vp: simd_float4x4, slot: MTLBuffer, peers: PeerCloudStore) {
+        let uniformsIndex = Int(RMBufferIndexUniforms.rawValue)
+        let originToClip = vp * peerOriginToWorld
+        enc.pushDebugGroup("PeerClouds")
+        enc.setRenderPipelineState(pipeline.cloudPoints)
+        enc.setDepthStencilState(pipeline.depthWrite)
+        for (slotIndex, peer) in peers.peers.prefix(PeerCloudStore.maxPeers).enumerated() {
+            let snap = peer.buffer.snapshot()
+            guard snap.count > 0 else { continue }
+            let stride = Decimation.stride(count: snap.count, target: maxPeerPoints)
+            let uniforms = RMCloudUniforms(
+                viewProjection: originToClip,
+                pointSize: peerPointSizePx,
+                alpha: peerAlpha,
+                stride: UInt32(stride),
+                count: UInt32(snap.count),
+                perspective: 1)
+            let offset = MetalRenderer.peerUniformOffset + slotIndex * MetalRenderer.peerUniformStride
+            slot.contents().advanced(by: offset).storeBytes(of: uniforms, as: RMCloudUniforms.self)
+            enc.setVertexBuffer(snap.buffer, offset: 0, index: Int(RMBufferIndexPoints.rawValue))
+            enc.setVertexBuffer(slot, offset: offset, index: uniformsIndex)
+            enc.drawPrimitives(type: .point, vertexStart: 0, vertexCount: Decimation.decimatedCount(count: snap.count, stride: stride))
+        }
+        enc.popDebugGroup()
     }
 }

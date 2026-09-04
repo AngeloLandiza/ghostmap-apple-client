@@ -117,6 +117,39 @@ check(kfs.keyframes.first?.aligned == false, "aligned false")
 check(kfs.keyframes.first?.pointsInline?.count == 6, "points inline")
 check(kfs.keyframes.first?.intrinsics?.w == 256, "intrinsics")
 
+// POST /v1/sessions/:id/upload-urls
+let tickets = try decoder.decode(KeyframeUploadURLsResponse.self, from: Data("""
+{"uploads":[{"seq":3,"kind":"depth","path":"sessions/s1/kf/d1/3.depth.lzfse","url":"https://storage.example/put?sig=1",
+ "method":"PUT","headers":{"Content-Type":"application/octet-stream","x-goog-Meta-Seq":"3"},
+ "expires_at":"2026-09-04T12:30:00.000Z"},
+ {"seq":3,"kind":"confidence","path":"sessions/s1/kf/d1/3.conf.lzfse","url":"https://storage.example/put?sig=2",
+ "method":"PUT","headers":{},"expires_at":"2026-09-04T12:30:00.000Z"}]}
+""".utf8))
+check(tickets.uploads.count == 2, "upload tickets")
+check(tickets.uploads.first?.kind == .depth, "upload kind")
+// Header names must survive verbatim: they are signed into the GCS URL.
+check(tickets.uploads.first?.headers["x-goog-Meta-Seq"] == "3", "upload headers verbatim")
+
+// POST /v1/sessions/:id/leave
+let left = try decoder.decode(LeaveSessionResponse.self, from: Data("""
+{"left":true,"participants":[{"id":"p1","kind":"device","color":"#38bdf8","left_at":"2026-09-04T12:05:00.000Z"}]}
+""".utf8))
+check(left.left && left.participants?.first?.isActive == false, "leave marks the row inactive")
+
+// POST /v1/sessions/:id/end
+let ended = try decoder.decode(SessionStatusResponse.self, from: Data(#"{"session":{"id":"s1","name":"n","status":"ended"}}"#.utf8))
+check(ended.session.status == .ended, "end status")
+
+// Every participant colour the backend hands out parses into the app's PartyColor.
+for hex in ["#38bdf8", "#f472b6", "#facc15", "#4ade80", "#a78bfa", "#fb923c", "#22d3ee", "#f87171"] {
+    check(PartyColor(hex: hex) != nil, "palette colour \(hex)")
+}
+check(PartyColor(hex: envelope.participants.first?.color ?? "") != nil, "participant colour parses")
+
+// The party keyframe the streamer builds must survive a round trip through the wire encoding.
+let inline = InlinePoints.encode([PackedPoint(position: SIMD3<Float>(1, 2, 3), r: 10, g: 20, b: 30)])
+check(InlinePoints.decode(inline).first?.r == 10, "inline point round trip")
+
 // errors
 let err = try decoder.decode(APIErrorEnvelope.self, from: Data(#"{"error":{"code":"session_full","message":"this party is full"}}"#.utf8))
 check(err.error.code == "session_full", "error envelope")

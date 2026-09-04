@@ -105,6 +105,8 @@ final class CaptureSession {
 
     private var processor: KeyframeProcessor?
     private var storage: StorageQueue?
+    /// Set while this recording is also feeding a party; nil for a solo capture.
+    private var partyStreamer: KeyframeStreamer?
     private var logger: SessionLogger
     private var recordingStart: Date?
     private var recordingEnd: Date?
@@ -142,7 +144,19 @@ final class CaptureSession {
         controller.markerPhysicalWidth = env.settings.markerPhysicalWidth
         controller.onOriginChange = { [weak self] _, new in self?.markerOriginChanged(to: new) }
         env.thermal.onChange = { [weak self] old, new in self?.thermalChanged(from: old, to: new) }
+        // Party peers are drawn by both renderers; the store is empty (and free) outside a party.
+        mainRenderer.peers = env.party.peers
+        ghostRenderer.peers = env.party.peers
+        env.party.poseProvider = { [weak controller] in controller?.currentAlignedPose }
     }
+
+    // MARK: Party
+
+    /// The party this capture is contributing to, if any.
+    var party: PartySession { env.party }
+
+    /// True while this recording is streaming keyframes into a party.
+    var isStreamingToParty: Bool { partyStreamer != nil }
 
     // MARK: Marker origin
 
@@ -195,6 +209,9 @@ final class CaptureSession {
         statusTask = nil
         controller.pause()
         env.thermal.onChange = nil
+        env.party.poseProvider = nil
+        mainRenderer.peers = nil
+        ghostRenderer.peers = nil
     }
 
     var canStart: Bool { phase == .preview || phase == .saved || { if case .failed = phase { return true } else { return false } }() }
@@ -245,6 +262,12 @@ final class CaptureSession {
                 ghostRenderer.camera.setNorth(fromForward: forward)
                 northSet = true
             }
+            partyStreamer = env.party.beginStreaming(logger: log)
+            if partyStreamer != nil {
+                let target = InlinePoints.maxPoints
+                await processor?.setInlinePointTarget(target)
+                log.log(.cloud, "party stream attached: session=\(env.party.session?.id ?? "-") inlineCap=\(target)")
+            }
             controller.policy.mode = ThermalMonitor.policyMode(for: env.thermal.state)
             controller.setIntake(true)
             phase = .recording
@@ -264,14 +287,47 @@ final class CaptureSession {
         }
         inFlightKeyframes += 1
         ghostRenderer.setDepthIntrinsics(snapshot.intrinsics)
+        // The party frame is resolved here, on the main actor, while the marker origin is known;
+        // by the time the processor is done the origin may already have moved on.
+        let streamer = snapshot.isCarveOnly ? nil : partyStreamer
+        let aligned = streamer == nil ? nil : controller.alignedPose(worldFromCamera: snapshot.cameraTransform)
+        let mapping = controller.worldMappingStatus.label
         // Explicit priority: the task is created inside the AR callback on the main thread, so without
         // it the actor work would inherit user-interactive QoS and fight the 60 fps render loop.
         Task(priority: .utility) { [weak self] in
-            let stats = await processor.process(snapshot)
+            let outcome = await processor.process(snapshot)
+            if let streamer, let aligned {
+                await streamer.enqueue(CaptureSession.streamedKeyframe(
+                    snapshot: snapshot, outcome: outcome, aligned: aligned, worldMappingStatus: mapping))
+            }
             guard let self else { return }
-            self.cloudStats = stats
+            self.cloudStats = outcome.stats
             self.inFlightKeyframes -= 1
         }
+    }
+
+    /// Builds the wire form of one keyframe for the party.
+    ///
+    /// Positions and the pose are both expressed in the party's origin frame when the marker has
+    /// been seen (`aligned == true`); otherwise both stay in this phone's ARKit world frame and
+    /// `aligned == false` tells viewers to grey them out rather than trust the alignment.
+    nonisolated static func streamedKeyframe(snapshot: KeyframeSnapshot,
+                                             outcome: KeyframeOutcome,
+                                             aligned: AlignedPose,
+                                             worldMappingStatus: String) -> StreamedKeyframe {
+        let originFromWorld = aligned.aligned ? aligned.pose * Pose(matrix: snapshot.cameraTransform).inverse : nil
+        let k = snapshot.intrinsics
+        return StreamedKeyframe(
+            seq: Int(outcome.seq),
+            timestamp: snapshot.timestamp,
+            pose: aligned.pose.columnMajorArray.map(Double.init),
+            aligned: aligned.aligned,
+            intrinsics: KeyframeIntrinsics(fx: Double(k.fx), fy: Double(k.fy), cx: Double(k.cx), cy: Double(k.cy), w: k.width, h: k.height),
+            trackingState: snapshot.tracking.wireName,
+            worldMappingStatus: worldMappingStatus,
+            depthMillimeters: outcome.depthMillimeters,
+            confidence: snapshot.confidence,
+            pointsInline: InlinePoints.encode(outcome.inlinePoints, originFromWorld: originFromWorld))
     }
 
     func stopRecording() async {
@@ -293,6 +349,11 @@ final class CaptureSession {
                 try await Task.sleep(for: .milliseconds(20))
                 waited += 1
             }
+            // Only now: the in-flight keyframes above still enqueue into the party stream, and
+            // `finish()` is what drains and reports them.
+            partyStreamer = nil
+            await env.party.endStreaming()
+            await processor.setInlinePointTarget(0)
             let stats = await processor.stats
             cloudStats = stats
 
@@ -362,6 +423,8 @@ final class CaptureSession {
             logger.log(.app, "finalize done in \(String(format: "%.2f", manifest.finalizeSeconds ?? 0)) s: points=\(manifest.pointCount) keyframes=\(manifest.keyframeCount) candidates=\(controller.keyframeCandidates) dropped=\(droppedKeyframes) logErrors=\(finalLog.errors) size=\(manifest.sizeBytes ?? 0)B duration=\(String(format: "%.1f", manifest.durationSeconds))s callbackP95=\(String(format: "%.2f", controller.callbackP95Ms))ms callbackMax=\(String(format: "%.2f", controller.callbackMaxMs))ms processMax=\(String(format: "%.1f", stats.maxProcessMs))ms grid=\(stats.gridState) memMB=\(rm_physical_footprint_bytes() / 1_048_576) worldMap=\(hasWorldMap) marker=\(controller.origin.state.label) markerDetections=\(controller.origin.detections) markerLosses=\(controller.origin.losses)")
         } catch {
             // Flush and fsync the log before giving up: Rebuild reads exactly this file.
+            partyStreamer = nil
+            await env.party.endStreaming()
             logStatus = (try? await storage.finish()) ?? logStatus
             manifest.status = .failed
             manifest.keyframeCount = logStatus.records
@@ -484,8 +547,26 @@ final class CaptureSession {
         s.videoFormat = controller.videoFormatDescription
         s.markerEnabled = controller.isMarkerDetectionActive
         s.markerState = controller.origin.state
+        applyPartyStatus(to: &s)
         s.warning = warning(for: s)
         if s != status.snapshot { status.snapshot = s }
+    }
+
+    /// Copies the party's live state into the strip and keeps the renderers' `world_from_origin`
+    /// up to date, so peers' origin-frame points land in the right place as soon as the marker is seen.
+    private func applyPartyStatus(to s: inout StatusSnapshot) {
+        let party = env.party
+        let transform = controller.worldFromOrigin?.matrix ?? matrix_identity_float4x4
+        mainRenderer.peerOriginToWorld = transform
+        ghostRenderer.peerOriginToWorld = transform
+        s.partyCode = party.inviteCode
+        s.partyParticipants = party.isActive ? party.participantCount : 0
+        s.partyPeers = party.peers.peers.count
+        s.partyPeerPoints = party.peers.totalPoints
+        s.partyStreamed = party.streamStats.streamed
+        s.partyDropped = party.streamStats.dropped + party.streamStats.failed
+        s.partyStreaming = partyStreamer != nil
+        s.partyLive = party.connection.isLive
     }
 
     private func warning(for s: StatusSnapshot) -> String? {
@@ -504,6 +585,12 @@ final class CaptureSession {
             if t > 5 { return "Tracking \(s.tracking.label) for \(Int(t)) s" }
         }
         if logStatus.errors > 0 { return "Keyframe log write errors: \(logStatus.errors)" }
+        if s.partyStreaming, case .degraded(let reason) = env.party.connection {
+            return "Party live updates offline: \(reason)"
+        }
+        if s.partyPeers > 0, !controller.origin.isAligned, controller.isMarkerDetectionActive {
+            return "Point at the marker — peers' points cannot be placed until this phone is aligned"
+        }
         if s.gridState == .coarsened { return "Cloud coarsened to \(Int((cloudStats.cellSize * 100).rounded())) cm" }
         // Lowest priority: a build-time problem, not something happening to this recording.
         if let error = controller.markerReferenceError { return "Marker origin off: \(error.description)" }

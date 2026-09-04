@@ -86,6 +86,16 @@ struct StatusStrip: View {
                 .accessibilityLabel("Marker origin \(snapshot.markerState.label)")
             }
             Text("\(snapshot.keyframes) kf · \(Format.count(snapshot.points)) pts · \(Format.duration(snapshot.elapsed)) · ~\(Format.bytes(snapshot.estimatedDiskBytes))")
+            if snapshot.isInParty {
+                HStack(spacing: 4) {
+                    Circle().fill(partyColor).frame(width: 6, height: 6)
+                    Text("Party \(PartyCode.formatted(snapshot.partyCode ?? "")) · \(snapshot.partyParticipants)")
+                        .foregroundStyle(partyColor)
+                    Text("· ↑\(snapshot.partyStreamed)\(snapshot.partyDropped > 0 ? " ✕\(snapshot.partyDropped)" : "") · \(snapshot.partyPeers) peer\(snapshot.partyPeers == 1 ? "" : "s") \(Format.count(snapshot.partyPeerPoints)) pts")
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Party \(snapshot.partyCode ?? ""), \(snapshot.partyParticipants) participants, \(snapshot.partyStreamed) keyframes streamed, \(snapshot.partyDropped) dropped, \(snapshot.partyPeers) peers")
+            }
             HStack(spacing: 4) {
                 Circle().fill(thermalColor).frame(width: 6, height: 6)
                 Text(ThermalMonitor.label(for: snapshot.thermal)).foregroundStyle(thermalColor)
@@ -117,6 +127,13 @@ struct StatusStrip: View {
         case .limited: return .orange
         case .notAvailable: return .red
         }
+    }
+
+    /// Green while the channel is delivering and this phone is streaming, amber while the party is
+    /// only half connected, grey when it is joined but idle.
+    private var partyColor: Color {
+        guard snapshot.partyLive else { return .orange }
+        return snapshot.partyStreaming ? .green : .cyan
     }
 
     /// Green while the marker is being observed, orange once it is out of view (the origin still

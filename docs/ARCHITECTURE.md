@@ -10,12 +10,14 @@ Packages/MapCore (Swift package, no UIKit/ARKit/Metal; tested on macOS)
   Codec/      DepthCodec (u16 mm + LZFSE), PLYWriter / PLYReader, CRC32
   Storage/    MapManifest, KeyframeLog (append-only "SMKF" records), MapStore, CloudRebuilder, MapError
   Backend/    PKCE + Base64URL, GoogleOAuth (authorization URL, callback, token body), SnakeCase + GhostmapJSON coders, JSONValue, RetryPolicy, BackendURL
+  Party/      PartyCode (invite codes, ghostmap:// links), PartyColor (the backend's palette, tinting), InlinePoints (points_inline select/encode/decode), AblyWire (token shapes, SSE envelopes, REST auth), ServerSentEventParser, TrackingState wire names
 
 App (iOS, Swift 6 language mode)
   Capture/    ARSessionController, FrameExtractor, KeyframeProcessor (actor), StorageQueue, CaptureSession, ThermalMonitor, SessionLogger, CaptureSettings, MapRebuildService, MarkerReference
   Rendering/  MetalContext, PointCloudPipeline, Shaders.metal + ShaderTypes.h, SharedPointBuffer, TrajectoryBuffer, MetalRenderer, GhostMapRenderer, OrbitCamera (GhostCamera), RenderClock, RenderMath
-  Cloud/      GhostmapAPI (actor over URLSession), GhostmapModels (DTOs), GoogleSignIn (ASWebAuthenticationSession + PKCE), AccountStore (@Observable), Keychain (SecItem), CloudSettings
-  UI/         MapListView, CaptureView, GhostMapView (overlay, panel, status strip), MapDetailView, SettingsView, MetalViewRepresentable, StatusModel, UnsupportedDeviceView
+  Cloud/      GhostmapAPI (actor over URLSession), GhostmapModels (DTOs), GoogleSignIn (ASWebAuthenticationSession + PKCE), AccountStore (@Observable), Keychain (SecItem), CloudSettings,
+              PartySession (@Observable, the party this phone is in), AblyRealtime (actor: SSE subscribe + REST publish), KeyframeStreamer (actor: signed uploads + registration), PeerCloudStore / PeerCloud (a SharedPointBuffer per peer)
+  UI/         MapListView, CaptureView, GhostMapView (overlay, panel, status strip), MapDetailView, SettingsView, PartyView (+ PartyBadge, PartyQRCode), MetalViewRepresentable, StatusModel, UnsupportedDeviceView
   Support/    MemoryFootprint.c (phys_footprint), bridging header
 ```
 
@@ -40,10 +42,46 @@ GhostMapRenderer (≤ 30 fps, skips when the main renderer is behind) reads Shar
 CaptureSession status loop (5 Hz) → StatusModel → Ghost Map strip
 ```
 
+## Data flow in a party
+
+```
+POST /v1/sessions (origin = marker when marker mode is on)   ┐
+POST /v1/sessions/join { code }                              ├─ PartySession (@Observable @MainActor)
+POST /v1/sessions/:id/leave | /end                           ┘     owns the party, the peers and the streamer
+
+recording, per keyframe (after KeyframeProcessor has integrated it)
+   CaptureSession.handleKeyframe: AlignedPose from MarkerOrigin (main actor, before dispatch)
+        │  StreamedKeyframe { pose (origin frame), aligned, intrinsics, tracking, depth mm, confidence,
+        │                     points_inline = InlinePoints.select(appended + updates) ≤ 2 000, re-framed }
+        ▼
+   KeyframeStreamer (actor, queue of 10, drops the oldest)
+        ├─ POST /v1/sessions/:id/upload-urls   (≤ 5 keyframes per round, kinds depth + confidence)
+        ├─ PUT  <signed GCS url>               (DepthCodec.encodeDepth / encodeConfidence — the same LZFSE payloads as keyframes.bin)
+        └─ POST /v1/sessions/:id/keyframes     (the backend fans them out on the Ably channel)
+
+live channel  session:<id>
+   AblyRealtime (actor)
+        ├─ subscribe: URLSession streaming data task → SSE → ServerSentEventParser → AblyWire.message
+        │             reconnect with doubling backoff ≤ 30 s, resume with &lastEvent, refresh the token on 401/403
+        ├─ publish:   POST https://rest.ably.io/channels/<ch>/messages  ("pose", ≤ 10 Hz, only when moved)
+        └─ token:     POST /v1/realtime/token → Ably TokenRequest → POST /keys/<keyName>/requestToken
+        │
+        ▼  AsyncStream<AblyRealtimeEvent>
+   PartySession.handle
+        ├─ "keyframes" → PeerCloudStore → PeerCloud.ingest (InlinePoints.decode, tinted with the party colour)
+        ├─ "pose"      → PeerCloud.latestPose
+        ├─ "participant" / "session ended" → refresh or tear down
+        └─ counters → StatusSnapshot → Ghost Map strip
+
+MetalRenderer and GhostMapRenderer draw each PeerCloud through viewProjection · world_from_origin
+(small points, 70 % alpha; GhostMapRenderer also draws one frustum per peer in their colour)
+```
+
 ## Concurrency model
 
 - `ARSessionController`, both renderers, `CaptureSession`, `StatusModel` and all views are `@MainActor`. `ARSessionDelegate` and `MTKViewDelegate` are not actor-annotated in the SDK, so their methods are `nonisolated` and hop in with `MainActor.assumeIsolated` (the session's delegate queue is the main queue; MTKView draws on the main thread).
 - `KeyframeProcessor` is an actor: all voxel-map mutation happens there.
+- `AblyRealtime` and `KeyframeStreamer` are actors: the SSE stream, the token exchange, LZFSE encoding for the party and every upload happen off the main actor. `PartySession`, `PeerCloudStore` and `PeerCloud` are `@MainActor` — realtime events arrive there through an `AsyncStream`, and the decode of one message is bounded by the contract (≤ 2 000 points × ≤ 50 keyframes) so it stays inside a frame.
 - `StorageQueue` is a serial `DispatchQueue` owning the `KeyframeLogWriter`; `SessionLogger` has its own serial queue.
 - Metal objects cross isolation only inside `@unchecked Sendable` wrappers whose invariants are documented in code: `SharedPointBuffer` (lock-guarded state, append-beyond-count then publish, double buffer swap for whole replacements, in-place updates accepted as one-frame cosmetic tearing), `TrajectoryBuffer`, `MetalContext`, `PointCloudPipeline`, `RenderClock`.
 - No `DispatchQueue.main.async` anywhere; no force-unwraps in the app.
@@ -62,6 +100,6 @@ CaptureSession status loop (5 Hz) → StatusModel → Ghost Map strip
 
 - **Marker origin** (Phase 2 §5, implemented): `ARSessionController` adds the bundled `Marker/ghostmap-marker.png` as an `ARReferenceImage` (`physicalWidth` from `CaptureSettings.markerPhysicalWidth`, `maximumNumberOfTrackedImages = 1`) and feeds every `ARImageAnchor` add/update/remove into `MapCore.MarkerOrigin`. `CaptureSession.alignedPose(worldFromCamera:)` returns `origin_from_camera = world_from_origin⁻¹ · camera.transform` with the wire `aligned` flag, and `cloudOrigin` is the `{type: "marker", marker_id}` descriptor for `POST /v1/sessions` and `POST /v1/maps`. The *local* map is unchanged: `keyframes.bin`, `cloud.ply` and `manifest.origin` stay in the session-start world frame; the marker frame is applied at upload time.
 - **Upload** (swarm plan §5.2, §7): `MapStore` exposes every file URL; keyframe records already carry the plan's live-keyframe fields and `manifest.json` mirrors the map artifact manifest. `AppEnvironment.api` already speaks the whole map flow — `createMap` → `SignedUpload` tickets (`resumable` for `cloud.ply` and `keyframes.bin`) → `finalizeMap` — so the uploader only has to move bytes and report progress.
-- **Parties** (Phase 2 §2): `GhostmapAPI` covers create / by-code / join / leave / end / keyframe upload-urls / register keyframes / realtime token; `AccountStore.deviceIdentity` is the identity the backend binds participants to. The `ghostmap://` URL scheme is registered but not yet handled.
+- **Parties** (Phase 2 §2 and §5, implemented): `PartySession` owns create / join by code / leave / rejoin / end, the Ably subscription and the peers; `KeyframeStreamer` streams this phone's keyframes while recording; `PeerCloudStore` holds one `SharedPointBuffer` per peer and both renderers draw them. `ghostmap://join/<code>` is handled in `RootView`/`AppEnvironment.handle(url:)`. Not done: entering Ably presence (needs a WebSocket — see DECISIONS.md), catch-up of a party joined late via `GET /v1/sessions/:id/keyframes?since_id=…`, and `POST /v1/sessions/:id/merge` from the phone.
 - **Meshes**: `ARSessionController.start` sets `sceneReconstruction = []`; enabling it and consuming `ARMeshAnchor` is the flagged next step.
 - **Relocalization**: `worldmap.arworldmap` is saved but not yet used as `initialWorldMap`.
