@@ -10,6 +10,10 @@ struct CloudSettings: Sendable, Equatable {
     var signInAsMapper = true
     /// Show the account chooser every time instead of reusing the browser's Google session.
     var alwaysChooseAccount = false
+    /// Upload every map to the backend right after it finalizes (Phase 2 §5). Off by default: a
+    /// map always stays on the phone either way, so this only matters to a signed-in mapper who
+    /// wants the round trip automatic. `MapDetailView`'s Upload button works regardless.
+    var autoUpload = false
 
     /// The validated URL, or `nil` when the field holds something unusable.
     var backendURL: URL? { try? BackendURL.normalized(backendURLString) }
@@ -28,6 +32,7 @@ struct CloudSettings: Sendable, Equatable {
         if let url = d["backendURLString"] as? String, !url.isEmpty { s.backendURLString = url }
         s.signInAsMapper = d["signInAsMapper"] as? Bool ?? s.signInAsMapper
         s.alwaysChooseAccount = d["alwaysChooseAccount"] as? Bool ?? s.alwaysChooseAccount
+        s.autoUpload = d["autoUpload"] as? Bool ?? s.autoUpload
         return s
     }
 
@@ -36,6 +41,7 @@ struct CloudSettings: Sendable, Equatable {
             "backendURLString": backendURLString,
             "signInAsMapper": signInAsMapper,
             "alwaysChooseAccount": alwaysChooseAccount,
+            "autoUpload": autoUpload,
         ], forKey: CloudSettings.key)
     }
 }

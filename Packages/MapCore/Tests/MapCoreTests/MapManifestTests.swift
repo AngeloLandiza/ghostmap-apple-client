@@ -57,14 +57,17 @@ final class MapManifestTests: XCTestCase {
         XCTAssertNil(try jsonObject(manifest)["bbox"])
         XCTAssertNil(try jsonObject(manifest)["size_bytes"])
         XCTAssertNil(try jsonObject(manifest)["finalize_s"])
+        XCTAssertNil(try jsonObject(manifest)["cloud_map_id"])
 
         manifest.bbox = BoundingBox(min: SIMD3<Float>(-1, -2, -3), max: SIMD3<Float>(1, 2, 3))
         manifest.sizeBytes = 4_096
         manifest.finalizeSeconds = 2.5
+        manifest.cloudMapId = "map_abc123"
         let object = try jsonObject(manifest)
-        XCTAssertEqual(object.count, 19)   // 16 + bbox + size_bytes + finalize_s
+        XCTAssertEqual(object.count, 20)   // 16 + bbox + size_bytes + finalize_s + cloud_map_id
         XCTAssertEqual(object["size_bytes"] as? Int, 4096)
         XCTAssertEqual(object["finalize_s"] as? Double, 2.5)
+        XCTAssertEqual(object["cloud_map_id"] as? String, "map_abc123")
         let bbox = try XCTUnwrap(object["bbox"] as? [String: Any])
         XCTAssertEqual(Set(bbox.keys), ["min", "max"])
         XCTAssertEqual(bbox["min"] as? [Double], [-1, -2, -3])
@@ -135,6 +138,7 @@ final class MapManifestTests: XCTestCase {
         XCTAssertEqual(manifest.voxelSizeMeters, 0.02)
         XCTAssertNil(manifest.sizeBytes)
         XCTAssertNil(manifest.finalizeSeconds)
+        XCTAssertNil(manifest.cloudMapId)
     }
 
     func testEncodingIsDeterministic() throws {
@@ -158,9 +162,39 @@ final class MapManifestTests: XCTestCase {
         manifest.hasWorldMap = true
         manifest.finalizeSeconds = 3.75
         manifest.origin = OriginDescriptor(type: "marker", markerID: "tag36h11_7")
+        manifest.cloudMapId = "map_9f8e7d6c"
         let decoded = try MapManifest.decode(try manifest.encoded())
         XCTAssertEqual(decoded, manifest)
         XCTAssertEqual(decoded.createdAt, MapManifestTests.referenceDate)
+        XCTAssertEqual(decoded.cloudMapId, "map_9f8e7d6c")
+    }
+
+    /// Phase 2 §5 cloud upload: `cloud_map_id` round-trips through JSON and is absent (not
+    /// `null`) until a map has been uploaded.
+    func testCloudMapIdRoundTrip() throws {
+        var manifest = makeManifest()
+        XCTAssertNil(manifest.cloudMapId)
+        XCTAssertNil(try jsonObject(manifest)["cloud_map_id"], "omitted, not encoded as null, while unset")
+
+        manifest.cloudMapId = "01HZY3K9QW7R8T2X"
+        let encoded = try manifest.encoded()
+        XCTAssertEqual(try jsonObject(manifest)["cloud_map_id"] as? String, "01HZY3K9QW7R8T2X")
+
+        let decoded = try MapManifest.decode(encoded)
+        XCTAssertEqual(decoded.cloudMapId, "01HZY3K9QW7R8T2X")
+        XCTAssertEqual(decoded, manifest)
+
+        // A manifest written before this field existed decodes with cloudMapId nil.
+        let legacyJSON = """
+        {"map_id":"6ba7b810-9dad-11d1-80b4-00c04fd430c8","version":1,"name":"Legacy","frame":"world:session-start",
+         "origin":{"type":"session-start"},"point_count":1,"keyframe_count":1,
+         "created_at":"2026-09-02T14:05:00Z","duration_s":1,"device_model":"m","ios_version":"v",
+         "app_version":"1.0","status":"saved",
+         "encodings":{"depth":"u16mm+lzfse","confidence":"u8+lzfse","cloud":"c","keyframe_log":"smkf-v1"},
+         "has_world_map":false,"voxel_size_m":0.02}
+        """
+        let legacy = try MapManifest.decode(Data(legacyJSON.utf8))
+        XCTAssertNil(legacy.cloudMapId)
     }
 
     func testDecodeFailures() {

@@ -104,6 +104,31 @@ The redirect URI Google needs is that reversed id followed by `:/oauthredirect`.
 list the same client id in its `GOOGLE_CLIENT_IDS` environment variable. Neither value is a secret —
 iOS OAuth clients have no client secret.
 
+## Cloud maps
+
+A map always stays on the phone first — capture never depends on the network. Uploading it is a
+separate, optional step, and needs **Sign in as this phone** (Settings → Account) since only a
+*device* token may create cloud maps.
+
+**Automatic.** Settings → *Upload maps to cloud* (off by default). Turn it on and every map uploads
+right after it finalizes; the setting is disabled until you are signed in as this phone.
+
+**On demand.** Open a map from the list and use **Upload to cloud** in its *Cloud* section — this
+works whether or not the automatic setting is on, so one map can go up without turning it on for
+every future recording. A map already uploaded shows **Re-upload** instead, which reuses the same
+cloud record (uploading fresh files, then finalizing again) rather than creating a second one — the
+way to retry a failed upload or push local changes.
+
+**What happens.** The app registers the map (`POST /v1/maps`, or fresh upload tickets on the same
+record for a re-upload), `PUT`s every file that exists — `manifest.json`, `keyframes.bin`,
+`cloud.ply`, `thumbnail.png`, `session.log`, and `worldmap.arworldmap` when ARKit saved one — to its
+signed URL (the two large files, `cloud.ply` and `keyframes.bin`, upload through GCS's resumable
+protocol straight from disk rather than through memory), then finalizes with the manifest. Progress
+shows as which file is currently uploading; a map's detail screen and its row in the list both
+reflect the result — an error with the reason on failure, or a small cloud badge once it has
+succeeded. `cloud.ply` is the one file the backend requires: if it fails to upload, the whole
+attempt is reported as failed rather than finalizing a map with no point cloud.
+
 ## Parties (mapping a room together)
 
 A **party** is a session several phones and browsers share: everyone streams keyframes into one
@@ -189,9 +214,9 @@ more. Maps already recorded stay on each phone regardless — a party never owns
 
 ## Map library
 
-Each map shows a top-down thumbnail, name (rename via swipe or long press), point and keyframe counts, duration, size and status. Swipe left to delete.
+Each map shows a top-down thumbnail, name (rename via swipe or long press), point and keyframe counts, duration, size and status, plus a blue **Cloud** badge once it has been uploaded (see *Cloud maps* above) or a small spinner while an upload is in progress. Swipe left to delete.
 
-**Detail view**: drag to orbit, pinch to zoom, two-finger drag to pan; the menu switches top-down / orbit, resets the view, renames or deletes. **Export** shares `cloud.ply` (binary PLY with x y z r g b) via AirDrop, Files, Mail, etc. It opens in MeshLab, CloudCompare, Blender and Open3D.
+**Detail view**: drag to orbit, pinch to zoom, two-finger drag to pan; the menu switches top-down / orbit, resets the view, renames or deletes. **Export** shares `cloud.ply` (binary PLY with x y z r g b) via AirDrop, Files, Mail, etc. It opens in MeshLab, CloudCompare, Blender and Open3D. The *Cloud* section at the bottom uploads (or re-uploads) the map, with progress and any error shown inline.
 
 **Recovery**: if the app was killed mid-recording, the map appears as *failed* with a **Rebuild** button that reconstructs the cloud from the keyframe log. Rebuilt clouds are gray (the log stores depth, not color).
 

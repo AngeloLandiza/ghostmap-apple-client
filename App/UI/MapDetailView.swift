@@ -14,15 +14,21 @@ struct MapDetailView: View {
     @State private var showRename = false
     @State private var name: String
     @State private var topDown = false
+    /// The backend id once this map has been uploaded. Seeded from the manifest (a previous
+    /// launch's upload) and updated when `env.uploadStatus` reports a fresh success, since
+    /// `summary` itself is a snapshot the parent list took before this screen opened.
+    @State private var cloudMapId: String?
 
     init(env: AppEnvironment, summary: MapSummary, onChanged: @escaping () -> Void) {
         self.env = env
         self.summary = summary
         self.onChanged = onChanged
         _name = State(initialValue: summary.manifest.name)
+        _cloudMapId = State(initialValue: summary.manifest.cloudMapId)
     }
 
     private var plyURL: URL { env.store.url(for: .cloud, in: summary.manifest.mapID) }
+    private var uploadStatus: MapUploadStatus { env.uploadStatus[summary.manifest.mapID] ?? .idle }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -68,6 +74,9 @@ struct MapDetailView: View {
                     if let f = summary.manifest.finalizeSeconds { row("Finalize", String(format: "%.1f s", f)) }
                     row("ID", summary.manifest.mapID.rawValue)
                 }
+                Section("Cloud") {
+                    cloudSection
+                }
             }
             .listStyle(.insetGrouped)
             .frame(maxHeight: 300)
@@ -103,6 +112,61 @@ struct MapDetailView: View {
             Button("Cancel", role: .cancel) { name = summary.manifest.name }
         }
         .task { await load() }
+        .onChange(of: uploadStatus) { _, status in
+            if case .succeeded(let id) = status {
+                cloudMapId = id
+                onChanged()
+            }
+        }
+    }
+
+    // MARK: - Cloud upload
+
+    @ViewBuilder
+    private var cloudSection: some View {
+        switch uploadStatus {
+        case .uploading(let progress):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(stageLabel(progress.stage)).font(.subheadline)
+                ProgressView(value: progress.fraction)
+            }
+            .padding(.vertical, 2)
+        case .failed(let message):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+                uploadButton
+            }
+        case .idle, .succeeded:
+            if let cloudMapId {
+                row("Cloud ID", String(cloudMapId.prefix(12)))
+            }
+            uploadButton
+        }
+    }
+
+    @ViewBuilder
+    private var uploadButton: some View {
+        Button {
+            env.uploadMap(id: summary.manifest.mapID)
+        } label: {
+            Label(cloudMapId == nil ? "Upload to cloud" : "Re-upload", systemImage: "icloud.and.arrow.up")
+        }
+        .disabled(!env.account.canMap || uploadStatus.isUploading)
+        if !env.account.canMap {
+            Text("Sign in as this phone in Settings to upload maps.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func stageLabel(_ stage: MapUploadStage) -> String {
+        switch stage {
+        case .creatingRecord: return "Registering map…"
+        case .uploadingFile(let file): return "Uploading \(file.rawValue)…"
+        case .finalizing: return "Finalizing…"
+        }
     }
 
     private func row(_ label: String, _ value: String) -> some View {

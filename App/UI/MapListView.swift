@@ -22,7 +22,13 @@ struct MapListView: View {
                     List {
                         ForEach(maps, id: \.manifest.mapID) { summary in
                             NavigationLink(value: summary.manifest.mapID) {
-                                MapRow(summary: summary, isRebuilding: rebuilding.contains(summary.manifest.mapID), hasLog: hasLog(summary), onRebuild: { rebuild(summary) })
+                                MapRow(
+                                    summary: summary,
+                                    isRebuilding: rebuilding.contains(summary.manifest.mapID),
+                                    hasLog: hasLog(summary),
+                                    uploadStatus: env.uploadStatus[summary.manifest.mapID] ?? .idle,
+                                    onRebuild: { rebuild(summary) }
+                                )
                             }
                             .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button(role: .destructive) { delete(summary.manifest.mapID) } label: { Label("Delete", systemImage: "trash") }
@@ -149,6 +155,7 @@ struct MapRow: View {
     let summary: MapSummary
     var isRebuilding = false
     var hasLog = false
+    var uploadStatus: MapUploadStatus = .idle
     var onRebuild: () -> Void = {}
 
     var body: some View {
@@ -162,6 +169,7 @@ struct MapRow: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 HStack(spacing: 8) {
                     StatusBadge(status: summary.manifest.status)
+                    cloudBadge
                     if summary.manifest.status == .failed && hasLog {
                         Button(action: onRebuild) {
                             if isRebuilding { ProgressView().controlSize(.mini) } else { Text("Rebuild").font(.caption2.weight(.semibold)) }
@@ -175,6 +183,33 @@ struct MapRow: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)
+    }
+
+    /// A small indicator of this map's cloud state: uploading (live, from `AppEnvironment`),
+    /// uploaded (persisted in the manifest, survives relaunch), or nothing when neither applies —
+    /// most maps never leave the phone, so the common case shows no badge at all.
+    @ViewBuilder
+    private var cloudBadge: some View {
+        switch uploadStatus {
+        case .uploading:
+            HStack(spacing: 3) {
+                ProgressView().controlSize(.mini)
+                Text("Uploading").font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(.secondary)
+        case .failed:
+            Label("Upload failed", systemImage: "exclamationmark.icloud.fill")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.red)
+        case .idle, .succeeded:
+            if summary.manifest.cloudMapId != nil {
+                Label("Cloud", systemImage: "icloud.fill")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.blue.opacity(0.2), in: Capsule())
+                    .foregroundStyle(.blue)
+            }
+        }
     }
 
     @ViewBuilder

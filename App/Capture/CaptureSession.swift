@@ -421,6 +421,11 @@ final class CaptureSession {
             setStep(.manifest, 1)
             phase = .saved
             logger.log(.app, "finalize done in \(String(format: "%.2f", manifest.finalizeSeconds ?? 0)) s: points=\(manifest.pointCount) keyframes=\(manifest.keyframeCount) candidates=\(controller.keyframeCandidates) dropped=\(droppedKeyframes) logErrors=\(finalLog.errors) size=\(manifest.sizeBytes ?? 0)B duration=\(String(format: "%.1f", manifest.durationSeconds))s callbackP95=\(String(format: "%.2f", controller.callbackP95Ms))ms callbackMax=\(String(format: "%.2f", controller.callbackMaxMs))ms processMax=\(String(format: "%.1f", stats.maxProcessMs))ms grid=\(stats.gridState) memMB=\(rm_physical_footprint_bytes() / 1_048_576) worldMap=\(hasWorldMap) marker=\(controller.origin.state.label) markerDetections=\(controller.origin.detections) markerLosses=\(controller.origin.losses)")
+            // Phase 2 §5: opt-in, so a map that never touches the network still saves exactly as
+            // it always did — this only fires once the manifest itself is already safely on disk.
+            if env.cloud.autoUpload {
+                env.uploadMap(id: id)
+            }
         } catch {
             // Flush and fsync the log before giving up: Rebuild reads exactly this file.
             partyStreamer = nil

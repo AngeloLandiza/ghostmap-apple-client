@@ -2,6 +2,12 @@ import SwiftUI
 
 @main
 struct RoomMapperApp: App {
+    init() {
+        // Before anything else — in particular before AppEnvironment builds GhostmapAPI's and
+        // MapUploader's URLSessions — so a -uiTesting launch never reaches the real network.
+        UITestSupport.activateIfNeeded()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

@@ -151,6 +151,10 @@ public struct MapManifest: Sendable, Equatable, Codable {
     public var hasWorldMap: Bool
     public var voxelSizeMeters: Float
     public var finalizeSeconds: Double?
+    /// The backend's id for this map once it has been uploaded (Phase 2 §5 cloud upload). `nil`
+    /// until `MapUploader` finalizes the first successful upload; set again to the same value on a
+    /// re-upload since the backend map id does not change.
+    public var cloudMapId: String?
 
     public init(mapID: MapID = MapID(),
                 version: Int = MapManifest.currentVersion,
@@ -170,7 +174,8 @@ public struct MapManifest: Sendable, Equatable, Codable {
                 sizeBytes: Int64? = nil,
                 hasWorldMap: Bool = false,
                 voxelSizeMeters: Float = 0.02,
-                finalizeSeconds: Double? = nil) {
+                finalizeSeconds: Double? = nil,
+                cloudMapId: String? = nil) {
         self.mapID = mapID
         self.version = version
         self.name = name
@@ -193,6 +198,7 @@ public struct MapManifest: Sendable, Equatable, Codable {
         self.hasWorldMap = hasWorldMap
         self.voxelSizeMeters = voxelSizeMeters
         self.finalizeSeconds = finalizeSeconds
+        self.cloudMapId = cloudMapId
     }
 
     enum CodingKeys: String, CodingKey {
@@ -215,6 +221,7 @@ public struct MapManifest: Sendable, Equatable, Codable {
         case hasWorldMap = "has_world_map"
         case voxelSizeMeters = "voxel_size_m"
         case finalizeSeconds = "finalize_s"
+        case cloudMapId = "cloud_map_id"
     }
 
     public static func jsonEncoder() -> JSONEncoder {

@@ -17,10 +17,18 @@ final class AppEnvironment {
     let account: AccountStore
     /// The collaborative session this phone is in, if any, plus the peers' live clouds.
     let party: PartySession
+    /// Uploads a map folder to the backend (Phase 2 §5). Stateless itself; `uploadStatus` below is
+    /// the observable state a view actually reads.
+    let uploader: MapUploader
     /// An invite code handed to the app by a `ghostmap://join/<code>` link, waiting for the party
     /// screen to pick it up.
     var pendingJoinCode: String?
     private(set) var interruptedMapIDs: [MapID] = []
+    /// Where each map's cloud upload stands, keyed by map id. Read by the map list (for the cloud
+    /// badge) and the detail view (for the progress bar and any error); written only from
+    /// `uploadMap`. A map with no entry has never been uploaded this launch — check
+    /// `manifest.cloudMapId` for "uploaded in an earlier launch".
+    private(set) var uploadStatus: [MapID: MapUploadStatus] = [:]
 
     var settings: CaptureSettings {
         didSet { settings.save() }
@@ -49,6 +57,7 @@ final class AppEnvironment {
         let account = AccountStore(api: api)
         self.account = account
         party = PartySession(api: api, account: account, device: context.device)
+        uploader = MapUploader(api: api)
         let logger = SessionLogger.osLogger(.app)
         do {
             interruptedMapIDs = try store.markInterruptedRecordings()
@@ -79,5 +88,51 @@ final class AppEnvironment {
         cloud.backendURLString = url.absoluteString
         Task { await api.setBaseURL(url) }
         return url
+    }
+
+    // MARK: - Cloud upload (Phase 2 §5)
+
+    /// Starts uploading `id` if it is not already uploading, from the "Upload maps to cloud"
+    /// setting after a save and from the Upload button in `MapDetailView`. A map already uploaded
+    /// this launch (`cloudMapId` set) is re-uploaded onto the same cloud record rather than
+    /// creating a second one.
+    @discardableResult
+    func uploadMap(id: MapID) -> Task<Void, Never> {
+        if uploadStatus[id]?.isUploading == true { return Task {} }
+        return Task { [weak self] in await self?.runUpload(id: id) }
+    }
+
+    private func runUpload(id: MapID) async {
+        guard account.canMap else {
+            uploadStatus[id] = .failed("Sign in as this phone in Settings to upload maps.")
+            return
+        }
+        let manifest: MapManifest
+        do {
+            manifest = try store.loadManifest(id: id)
+        } catch {
+            uploadStatus[id] = .failed("Map not found on this phone.")
+            return
+        }
+        uploadStatus[id] = .uploading(MapUploadProgress(stage: .creatingRecord, completedFiles: 0, totalFiles: 0))
+        let directory = store.directoryURL(for: id)
+        let existingCloudMapId = manifest.cloudMapId
+        do {
+            let cloudMap = try await uploader.upload(
+                manifest: manifest,
+                directory: directory,
+                existingCloudMapId: existingCloudMapId
+            ) { [weak self] progress in
+                self?.uploadStatus[id] = .uploading(progress)
+            }
+            var saved = manifest
+            saved.cloudMapId = cloudMap.id
+            try? store.saveManifest(saved)
+            uploadStatus[id] = .succeeded(cloudMapId: cloudMap.id)
+            SessionLogger.osLogger(.cloud).notice("map \(id.rawValue, privacy: .public) uploaded as \(cloudMap.id, privacy: .public)")
+        } catch {
+            uploadStatus[id] = .failed(error.localizedDescription)
+            SessionLogger.osLogger(.cloud).error("upload of \(id.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 }

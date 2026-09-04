@@ -4,7 +4,8 @@
 #   scripts/rm.sh setup        install XcodeGen and the Metal toolchain if missing
 #   scripts/rm.sh gen          regenerate RoomMapper.xcodeproj from project.yml
 #   scripts/rm.sh marker       regenerate the printable origin marker (PNG + PDF)
-#   scripts/rm.sh test         run the MapCore unit tests on the Mac
+#   scripts/rm.sh test         run the MapCore unit tests on the Mac (alias: test-unit)
+#   scripts/rm.sh test-ui      run RoomMapperUITests on the connected iPhone (no camera; see TESTING.md)
 #   scripts/rm.sh build [debug|release]   build for the connected iPhone (signed)
 #   scripts/rm.sh install      install the last build on the iPhone
 #   scripts/rm.sh launch       launch it with the console attached (Ctrl-C detaches)
@@ -87,6 +88,26 @@ cmd_test() {
   (cd "$ROOT/Packages/MapCore" && xcrun swift test --scratch-path "$SCRATCH" >/dev/null 2>&1) && green "tests passed" || { red "tests FAILED"; exit 1; }
 }
 
+# RoomMapperUITests covers what does not need the camera (map list, Settings, Party validation —
+# see TESTING.md); the simulator cannot run ARKit at all, so this always targets the connected
+# device, same as `build`/`run`. Every launch carries -uiTesting, which stubs the network
+# (App/Support/UITestSupport.swift) so this never depends on the test bench's connectivity.
+cmd_test_ui() {
+  pick_developer_dir; detect_device
+  [[ -d "$ROOT/RoomMapper.xcodeproj" ]] || cmd_gen
+  find "$ROOT/App" "$ROOT/Packages" -name "* 2.*" -delete 2>/dev/null || true
+  bold "RoomMapperUITests on $RM_DEVICE_NAME ($RM_UDID)"
+  local log="/tmp/rm-test-ui.log"
+  if xcodebuild -project "$ROOT/RoomMapper.xcodeproj" -scheme "$SCHEME" -destination "platform=iOS,id=$RM_UDID" \
+       -only-testing:RoomMapperUITests -allowProvisioningUpdates -derivedDataPath "$DD" test >"$log" 2>&1; then
+    grep -E "^Test Case.*(passed|failed)|Executed [0-9]+ tests" "$log" | tail -10
+    green "UI tests passed"
+  else
+    grep -E "error:|Test Case.*failed|Executed [0-9]+ tests" "$log" | sort -u | head -30
+    red "UI tests FAILED (full log: $log)"; exit 1
+  fi
+}
+
 cmd_build() {
   pick_developer_dir; detect_device
   case "${1:-debug}" in release|Release) CONFIG=Release;; *) CONFIG=Debug;; esac
@@ -152,6 +173,8 @@ case "${1:-help}" in
   gen) cmd_gen;;
   marker) cmd_marker;;
   test) cmd_test;;
+  test-unit) cmd_test;;
+  test-ui) cmd_test_ui;;
   build) cmd_build "${2:-debug}";;
   install) cmd_install;;
   launch) cmd_launch;;

@@ -56,10 +56,31 @@ targets:
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: App/Resources/Info.plist
         SWIFT_OBJC_BRIDGING_HEADER: App/Support/RoomMapper-Bridging-Header.h
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_PREVIEWS: NO
         SUPPORTS_MACCATALYST: NO
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
         OTHER_SWIFT_FLAGS: "$(inherited)"
+    # Runs RoomMapperUITests as this target's Test action, so `xcodebuild test -scheme RoomMapper
+    # -only-testing:RoomMapperUITests` (scripts/rm.sh test-ui) works without a separate scheme.
+    scheme:
+      testTargets:
+        - RoomMapperUITests
+
+  RoomMapperUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: RoomMapperUITests
+    dependencies:
+      - target: RoomMapper
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tech.alandiza.roommapper.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        # UI test bundles run inside the app process named here rather than shipping their own.
+        TEST_TARGET_NAME: RoomMapper
+        SWIFT_VERSION: "6.0"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

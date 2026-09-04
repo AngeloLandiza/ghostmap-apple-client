@@ -256,7 +256,71 @@ Every non-obvious choice in RoomMapper and why. Newest additions at the bottom o
   membership (session id + code) is written to `UserDefaults` so a relaunch can offer **Rejoin** —
   the one operation the backend guarantees is always allowed.
 - **Wire logic lives in MapCore.** `PartyCode`, `PartyColor`, `InlinePoints`, `AblyWire` and the SSE
-  parser (`ServerSentEventParser`) are pure and unit tested (the app has no XCTest target). The SSE
+  parser (`ServerSentEventParser`) are pure and unit tested (the app itself had no test target of
+  any kind at the time — `RoomMapperUITests` below is UI-level, not a substitute for unit-testing
+  internals). The SSE
   parser implements the WHATWG field rules — sticky `id`, one optional space after the colon,
   multi-line `data`, `:` comments as Ably's heartbeat — so reconnect resumption and heartbeat
   handling are testable without a network.
+
+## Cloud upload (Phase 2 §5, added 2026-09-04)
+
+- **Progress is a `@MainActor` closure, not a polled snapshot.** `KeyframeStreamer` (parties) is
+  polled every 500 ms from an `@Observable` wrapper because it runs continuously and nobody is
+  waiting on one specific call. `MapUploader.upload` is one bounded call a screen is actively
+  watching, so it takes an `onProgress: @MainActor @Sendable (MapUploadProgress) -> Void` and
+  `await`s it at each step instead — the actor hops to `MainActor` to hand the update over and does
+  nothing else there, so `AppEnvironment` can write straight into its `@Observable` `uploadStatus`
+  dictionary with no separate poll loop, no timer to leak, and no chance of missing a fast step.
+- **Only `cloud.ply` failing aborts the upload.** The backend's `POST /v1/maps/:id/finalize`
+  refuses to finalize without it (`API.md`), so there is no point calling finalize if it did not
+  land. Every other file (manifest, thumbnail, log, world map) is best-effort, same as
+  `KeyframeStreamer`'s depth payload: a map with a missing thumbnail is still a saved map, and
+  finalize's `present` list on the backend already degrades gracefully to whatever actually
+  uploaded.
+- **Upload tickets are matched to files by path suffix, not by an explicit field.** `SignedUpload`
+  (API.md) carries `path`, not a `file` enum — the backend names objects
+  `maps/<mapId>/<filename>` (`mapObjectPath` in ghostmap-backend's `gcs.ts`), and `CloudMapFile`'s
+  raw values are exactly those filenames, so `ticket.path.hasSuffix("/" + file.rawValue)` finds the
+  right ticket without the wire format needing to change.
+- **Resumable uploads read from disk, never load the point cloud into `Data`.** `cloud.ply` and
+  `keyframes.bin` can be tens of megabytes; every other file is small enough that
+  `Data(contentsOf:)` plus a single `PUT` (mirroring `GhostmapAPI.performOnce`'s `session.data(for:)`
+  shape) is simplest. For the two large files, `MapUploader` follows GCS's resumable protocol
+  (`API.md`): an empty-body `POST` opens the session, its `Location` header is where the bytes
+  actually go, and *that* `PUT` uses `URLSession.uploadTask(with:fromFile:)` — a
+  completion-handler API bridged with `withCheckedContinuation` since there is no `async` overload
+  that reads from a file URL instead of `Data`. No chunking: one `PUT` of the whole file, same as
+  the plan called for.
+- **Progress is file-granularity, not byte-granularity.** Getting byte-level progress out of
+  `uploadTask(with:fromFile:)` needs a `URLSessionTaskDelegate` (KVO on the task's `Progress` object
+  races the completion handler firing). "Uploading cloud.ply…" plus a completed/total fraction over
+  six files is enough for the UI this needs — a delegate class for a smoother progress bar was not
+  worth it here.
+- **Re-upload reuses the cloud map id instead of creating a second one.** With
+  `manifest.cloudMapId` already set, `MapUploader.upload` calls `POST /v1/maps/:id/upload-urls` on
+  the existing id rather than `POST /v1/maps` — exactly what that endpoint is for ("fresh tickets
+  for files that expired or failed", API.md) — then finalizes the same record again. The Upload
+  button in `MapDetailView` becomes **Re-upload** once a cloud id exists, so retrying a failed
+  attempt or pushing a rename does not pile up duplicate cloud maps for one phone recording.
+  `manifest.json`'s `cloud_map_id` is what makes this possible across relaunches; it is optional
+  and omitted (not `null`) until the first successful upload, matching every other optional field
+  in the manifest.
+- **`-uiTesting` stubs the network from inside the app, not from the test process.** XCUITest
+  drives the app as a separate process over the accessibility tree; it cannot inject a URL protocol
+  into that process from outside. So `RoomMapperApp.init()` calls
+  `UITestSupport.activateIfNeeded()` before `AppEnvironment` builds any `URLSession`, and — only
+  when the `-uiTesting` launch argument is present — it registers `UITestStubURLProtocol` globally.
+  `URLProtocol.registerClass` is honored by every `URLSession` built from a `.default`
+  configuration (which is all of them here: `GhostmapAPI`, `KeyframeStreamer`, `MapUploader`), so
+  no session needs to know the stub exists. None of the three `RoomMapperUITests` need a real
+  response (the flows they cover — map list, Settings, a malformed party code — never get past
+  local validation), so the stub answers `/health` with a plausible body and everything else with a
+  501, loud enough that a future test relying on more would fail fast instead of hanging on a real
+  request.
+- **The UI test target shares the app's scheme instead of getting its own.** XcodeGen's
+  `RoomMapper.scheme.testTargets: [RoomMapperUITests]` adds a Test action to the existing
+  `RoomMapper` scheme, and `TEST_TARGET_NAME: RoomMapper` on the test target's settings is what
+  lets a UI test bundle run inside the app's process rather than needing one of its own. This is
+  what makes `xcodebuild test -scheme RoomMapper -only-testing:RoomMapperUITests`
+  (`scripts/rm.sh test-ui`) work without a second generated scheme to keep in sync.

@@ -24,6 +24,7 @@ struct SettingsView: View {
             Form {
                 backendSection
                 accountSection
+                uploadSection
                 markerSection
                 deviceSection
             }
@@ -179,6 +180,25 @@ struct SettingsView: View {
             } else {
                 Text("Signing in as this phone gets a 30-day device token that may upload maps and stream keyframes. Without it you get a 7-day viewer token.")
             }
+        }
+    }
+
+    // MARK: - Cloud upload
+
+    @ViewBuilder
+    private var uploadSection: some View {
+        Section {
+            Toggle("Upload maps to cloud", isOn: Binding(
+                get: { env.cloud.autoUpload },
+                set: { env.cloud.autoUpload = $0 }
+            ))
+            .disabled(!env.account.canMap)
+        } header: {
+            Text("Cloud maps")
+        } footer: {
+            Text(env.account.canMap
+                 ? "Every map uploads to the backend right after it saves. You can also upload — or re-upload — one map at a time from its detail screen."
+                 : "Sign in as this phone above to turn this on. You can still upload an individual map from its detail screen once you are signed in.")
         }
     }
 
