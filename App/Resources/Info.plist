@@ -40,14 +40,14 @@
 			<!-- Replace with the reversed OAuth client id, e.g. com.googleusercontent.apps.123456789012-abcdefg -->
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>com.googleusercontent.apps.REPLACE_WITH_CLIENT_ID</string>
+				<string>com.googleusercontent.apps.576954552798-r0kdv82no0lk6v71d871j8tq3lbrroj5</string>
 			</array>
 		</dict>
 	</array>
 	<!-- iOS OAuth client id from the Google Cloud console, e.g. 123456789012-abcdefg.apps.googleusercontent.com.
 	     Empty disables the Google sign-in button; see docs/USAGE.md. -->
 	<key>GhostmapGoogleClientID</key>
-	<string></string>
+	<string>576954552798-r0kdv82no0lk6v71d871j8tq3lbrroj5.apps.googleusercontent.com</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
