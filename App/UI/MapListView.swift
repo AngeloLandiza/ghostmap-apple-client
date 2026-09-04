@@ -5,6 +5,7 @@ struct MapListView: View {
     let env: AppEnvironment
     @State private var maps: [MapSummary] = []
     @State private var showCapture = false
+    @State private var showSettings = false
     @State private var renaming: MapSummary?
     @State private var newName = ""
     @State private var rebuilding: Set<MapID> = []
@@ -44,12 +45,18 @@ struct MapListView: View {
                 }
             }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape") }
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { showCapture = true } label: { Label("Scan", systemImage: "camera.viewfinder") }
                 }
             }
             .fullScreenCover(isPresented: $showCapture, onDismiss: reload) {
                 CaptureView(env: env)
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(env: env)
             }
             .alert("Rename map", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
                 TextField("Name", text: $newName)

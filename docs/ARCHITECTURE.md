@@ -9,11 +9,13 @@ Packages/MapCore (Swift package, no UIKit/ARKit/Metal; tested on macOS)
   Cloud/      PackedPoint (16 B, matches the Metal vertex), DynamicVoxelMap, VoxelGrid (static, used by rebuild), Decimation
   Codec/      DepthCodec (u16 mm + LZFSE), PLYWriter / PLYReader, CRC32
   Storage/    MapManifest, KeyframeLog (append-only "SMKF" records), MapStore, CloudRebuilder, MapError
+  Backend/    PKCE + Base64URL, GoogleOAuth (authorization URL, callback, token body), SnakeCase + GhostmapJSON coders, JSONValue, RetryPolicy, BackendURL
 
 App (iOS, Swift 6 language mode)
   Capture/    ARSessionController, FrameExtractor, KeyframeProcessor (actor), StorageQueue, CaptureSession, ThermalMonitor, SessionLogger, CaptureSettings, MapRebuildService
   Rendering/  MetalContext, PointCloudPipeline, Shaders.metal + ShaderTypes.h, SharedPointBuffer, TrajectoryBuffer, MetalRenderer, GhostMapRenderer, OrbitCamera (GhostCamera), RenderClock, RenderMath
-  UI/         MapListView, CaptureView, GhostMapView (overlay, panel, status strip), MapDetailView, MetalViewRepresentable, StatusModel, UnsupportedDeviceView
+  Cloud/      GhostmapAPI (actor over URLSession), GhostmapModels (DTOs), GoogleSignIn (ASWebAuthenticationSession + PKCE), AccountStore (@Observable), Keychain (SecItem), CloudSettings
+  UI/         MapListView, CaptureView, GhostMapView (overlay, panel, status strip), MapDetailView, SettingsView, MetalViewRepresentable, StatusModel, UnsupportedDeviceView
   Support/    MemoryFootprint.c (phys_footprint), bridging header
 ```
 
@@ -59,6 +61,7 @@ CaptureSession status loop (5 Hz) → StatusModel → Ghost Map strip
 ## Extension points
 
 - **Marker origin** (swarm plan §6): `MapManifest.origin` / `frame` and the pose written per keyframe in `KeyframeProcessor` (`camera.transform` today). A marker implementation detects an `ARImageAnchor`, sets `origin = {type: "marker", marker_id}` and writes `T_marker⁻¹ · camera.transform`.
-- **Upload** (swarm plan §5.2, §7): `MapStore` exposes every file URL; keyframe records already carry the plan's live-keyframe fields and `manifest.json` mirrors the map artifact manifest.
+- **Upload** (swarm plan §5.2, §7): `MapStore` exposes every file URL; keyframe records already carry the plan's live-keyframe fields and `manifest.json` mirrors the map artifact manifest. `AppEnvironment.api` already speaks the whole map flow — `createMap` → `SignedUpload` tickets (`resumable` for `cloud.ply` and `keyframes.bin`) → `finalizeMap` — so the uploader only has to move bytes and report progress.
+- **Parties** (Phase 2 §2): `GhostmapAPI` covers create / by-code / join / leave / end / keyframe upload-urls / register keyframes / realtime token; `AccountStore.deviceIdentity` is the identity the backend binds participants to. The `ghostmap://` URL scheme is registered but not yet handled.
 - **Meshes**: `ARSessionController.start` sets `sceneReconstruction = []`; enabling it and consuming `ARMeshAnchor` is the flagged next step.
 - **Relocalization**: `worldmap.arworldmap` is saved but not yet used as `initialWorldMap`.

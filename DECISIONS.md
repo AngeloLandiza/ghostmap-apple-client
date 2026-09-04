@@ -76,3 +76,55 @@ Every non-obvious choice in RoomMapper and why. Newest additions at the bottom o
 - **Confidence-weighted carving.** In-view voxels get a miss of −4 (high-confidence ray beyond them), −2 (medium), or −1 (pixel with no usable measurement); unconfirmed voxels die on their first miss, confirmed ones at score ≤ −4 from a max of 12. Occlusion (measurement nearer than the voxel) is still neutral so static geometry behind a person survives. Carve range extended to 8 m.
 - **Carve-only frames at 4 Hz.** Between keyframes the controller sends depth-only snapshots (no color sampling, nothing written to the log, no trajectory point) so stale voxels clear even when the phone is still. They count toward `keyframeIndex` (the age clock) but not toward keyframes.
 - **Settings.** `Quality` preset (Performance 3 cm / stride 2 / 1.5 M cap, Balanced 2 cm, Quality 1 cm with denser keyframes) and `Dynamic objects` sensitivity (Conservative / Normal / Aggressive: miss weights, death threshold and unconfirmed age) are exposed in the capture settings menu and persisted; they also set the draw budgets (main view 0.4/1/1.5 M points, Ghost Map 150/250/400 k) and the carve interval (0.5/0.25/0.2 s).
+
+## Account and backend API client (Phase 2 §5, added 2026-09-04)
+
+- **Both wire spellings decode into the same model.** `ghostmap-backend` serialises hand-written
+  payloads as `snake_case` (`share_url`, `next_cursor`, `device_id` on participants) but returns
+  database rows straight from Drizzle, whose keys are the lower-camel form of the same column
+  names (`pointCount`, `parentMapId`, `inviteCode`). `MapCore.SnakeCase.toCamelCase` therefore
+  deliberately does **not** uppercase acronyms — `device_id` → `deviceId`, not `deviceID` — because
+  that is exactly the form Drizzle emits, so one set of DTOs reads both, and keeps reading them if
+  the backend later normalises everything to `snake_case`. Requests are always encoded as
+  `snake_case`, which is what the server's zod validators expect. Swift property names read a
+  little less idiomatically (`deviceId`, `pictureUrl`) as the price.
+- **Opaque JSON subtrees are exempt from key conversion.** `GhostmapJSON.opaqueKeys` =
+  `headers`, `token_request`/`tokenRequest`, `manifest`, `details`. Without this, GCS header names
+  (`Content-Type`, `x-goog-resumable`) and the Ably token request (`keyName`, `mac`, `nonce`) would
+  be rewritten and become unusable. The strategy inspects the whole coding path, so *everything*
+  below one of those keys passes through verbatim.
+- **Only idempotent requests are retried.** `RetryPolicy` (3 attempts, 0.5 s → 1 s, half jitter,
+  capped at 8 s) is applied to `GET`s, `upload-urls`, `finalize`, `join`, `leave`, `end`,
+  `realtime/token` and `PATCH`/`DELETE` on a map; `POST /v1/maps`, `POST /v1/sessions` and
+  `POST /v1/sessions/:id/keyframes` are never repeated automatically because a repeat would create
+  a second map, a second party or duplicate keyframe rows. Retries cover 5xx/408/429 and transient
+  transport errors, and honour `Retry-After` when it is longer than the computed backoff.
+- **The token is read from the keychain per request**, not cached in the actor, so signing out
+  takes effect on the next call with no invalidation dance. The read is a synchronous `SecItem`
+  lookup inside the actor; it is a few hundred microseconds and only happens once per request.
+- **`ISO8601DateFormatter` is built per timestamp** rather than shared: it is not `Sendable`, and a
+  response carries a handful of dates at most.
+- **Errors are typed end to end.** `GhostmapAPIError`, `GoogleSignInError`, `KeychainError` and
+  `BackendURL.ValidationError` are used with Swift 6 typed `throws`, so a caller sees the exact
+  failure set. `WireString` (role, status, participant kind, join rejection, file name) keeps
+  unknown server values decodable instead of failing the whole response.
+- **PKCE, the OAuth URL, the callback parsing, the snake_case mapping, the retry schedule and the
+  backend-URL validation all live in `MapCore/Backend/`** with unit tests; `App/Cloud/` only does
+  `ASWebAuthenticationSession`, `URLSession` and the keychain. `Cloud/` inside MapCore already
+  means *point cloud*, hence the separate `Backend/` directory.
+- **The client id is a build input, not a secret.** `GhostmapGoogleClientID` in Info.plist ships
+  empty; with no usable id `GoogleSignIn.init` fails and the Settings screen explains why the
+  button is disabled. iOS OAuth clients have no client secret, so nothing secret is embedded.
+  The reversed-client-id URL scheme is registered in `CFBundleURLTypes` next to the `ghostmap://`
+  scheme that the party join links will use.
+- **The device identity is a UUID in the keychain** (`kSecAttrAccessibleAfterFirstUnlock`, not
+  synchronised to iCloud — a token belongs to one phone), mirrored into `UserDefaults` so a
+  keychain that is unavailable (simulator without an entitlement) still yields a stable id for the
+  install instead of a new device row per launch. Signing out clears the credentials and keeps the
+  identity.
+- **Signing in as "this phone" is a choice.** With the device identity the backend returns a
+  30-day `device` token that may upload maps and stream keyframes; without it, a 7-day `user`
+  token that may only view. The toggle is in Settings and defaults to on.
+- **The app-layer DTOs have no XCTest target** (the project has none, and MapCore is for pure
+  logic). `scripts/api-smoke/main.swift` compiles the models against MapCore on the Mac and asserts
+  they decode payloads shaped like the real ones; the header says how to run it.

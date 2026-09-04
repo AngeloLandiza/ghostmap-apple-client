@@ -20,6 +20,34 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>tech.alandiza.roommapper.join</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ghostmap</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>tech.alandiza.roommapper.googleoauth</string>
+			<!-- Replace with the reversed OAuth client id, e.g. com.googleusercontent.apps.123456789012-abcdefg -->
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.REPLACE_WITH_CLIENT_ID</string>
+			</array>
+		</dict>
+	</array>
+	<!-- iOS OAuth client id from the Google Cloud console, e.g. 123456789012-abcdefg.apps.googleusercontent.com.
+	     Empty disables the Google sign-in button; see docs/USAGE.md. -->
+	<key>GhostmapGoogleClientID</key>
+	<string></string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>

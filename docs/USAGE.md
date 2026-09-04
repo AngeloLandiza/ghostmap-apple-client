@@ -32,6 +32,46 @@ The strip at the bottom shows: tracking state (green normal, amber limited with 
 - **Live depth points**, **Global cloud in main view**, **Ghost Map auto-orbit**: display toggles.
 - **4K color (30 fps)**: sharper point colors at the cost of the 60 fps preview.
 
+## Settings (gear, top left of the map list)
+
+The gear in the map list toolbar opens the backend and account settings. Everything here is
+optional — with no backend and no account the app captures to the phone exactly as before.
+
+**Backend.** The address of the Ghostmap API, `https://ghostmap-backend.vercel.app` by default.
+`https://` is added when you leave the scheme off, a trailing slash is trimmed, and an address with
+a query or fragment is rejected. **Test connection** calls `GET /health` and shows the version and
+region, or the reason it failed. **Default** puts the production URL back.
+
+**Account.** *Sign in with Google* opens Google's consent screen in a system browser sheet
+(`ASWebAuthenticationSession`), and the app exchanges the authorization code for an id token using
+PKCE — no password ever reaches the app, and there is no client secret in the build. The id token
+goes to `POST /v1/auth/google`, which returns the backend token the app stores in the keychain.
+
+- **Sign in as this phone** (on by default) sends this phone's identity and gets a 30-day *device*
+  token that may upload maps and join parties as a mapper. Off, you get a 7-day *user* token that
+  can only watch.
+- **Always choose account** uses a private browser session, so the Google account chooser appears
+  every time instead of reusing the browser's signed-in account.
+- The account card shows the name, email, token role and expiry. **Sign out** forgets the token;
+  the phone's identity stays, so signing in again reuses the same device on the backend.
+
+**This phone.** The device name reported to the backend and the first eight characters of the
+identity UUID kept in the keychain.
+
+### Enabling Google sign-in in a build
+
+The button is disabled until the build carries an iOS OAuth client id. In the Google Cloud console,
+create an **iOS** OAuth client for bundle id `tech.alandiza.roommapper`, then in
+`App/Resources/Info.plist`:
+
+1. put the client id (`123456789012-abcdefg.apps.googleusercontent.com`) in `GhostmapGoogleClientID`;
+2. replace `com.googleusercontent.apps.REPLACE_WITH_CLIENT_ID` in `CFBundleURLTypes` with the
+   reversed client id (`com.googleusercontent.apps.123456789012-abcdefg`).
+
+The redirect URI Google needs is that reversed id followed by `:/oauthredirect`. The backend must
+list the same client id in its `GOOGLE_CLIENT_IDS` environment variable. Neither value is a secret —
+iOS OAuth clients have no client secret.
+
 ## Map library
 
 Each map shows a top-down thumbnail, name (rename via swipe or long press), point and keyframe counts, duration, size and status. Swipe left to delete.
@@ -44,4 +84,5 @@ Each map shows a top-down thumbnail, name (rename via swipe or long press), poin
 
 Maps live in the app's Documents folder: Files app → On My iPhone → RoomMapper → Maps → `<map id>/` with `manifest.json`, `keyframes.bin`, `cloud.ply`, `thumbnail.png`, `worldmap.arworldmap` (when ARKit reached "mapped") and `session.log`. See FORMAT.md for the byte layout. `scripts/rm.sh pull-maps` copies all of them to the Mac.
 
-`session.log` records the video format, thresholds, thermal and tracking transitions, keyframe log errors, and a finalize summary with points, keyframes, dropped keyframes, duration, callback timing, processing time and memory. The same lines go to the unified log under subsystem `tech.alandiza.roommapper` (categories `capture`, `cloud`, `storage`, `render`, `thermal`, `app`), which `scripts/rm.sh launch` streams to the terminal.
+`session.log` records the video format, thresholds, thermal and tracking transitions, keyframe log errors, and a finalize summary with points, keyframes, dropped keyframes, duration, callback timing, processing time and memory. The same lines go to the unified log under subsystem `tech.alandiza.roommapper` (categories `capture`, `cloud`, `storage`, `render`, `thermal`, `app`; backend and sign-in
+lines use `cloud`), which `scripts/rm.sh launch` streams to the terminal.
